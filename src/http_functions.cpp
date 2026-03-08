@@ -208,10 +208,18 @@ BuildSession(const HttpBindData &bind_data, const HttpConfig &config) {
 			auto now_epoch = std::chrono::duration_cast<std::chrono::seconds>(
 			    now.time_since_epoch()).count();
 			if (now_epoch >= config.bearer_token_expires_at) {
+				auto format_time = [](int64_t epoch) -> std::string {
+					time_t t = static_cast<time_t>(epoch);
+					struct tm tm_buf;
+					gmtime_r(&t, &tm_buf);
+					char buf[32];
+					strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm_buf);
+					return std::string(buf) + " (" + std::to_string(epoch) + ")";
+				};
 				throw std::runtime_error(
 				    "Bearer token for " + ExtractHost(bind_data.url) +
-				    " expired at " + std::to_string(config.bearer_token_expires_at) +
-				    " (current time: " + std::to_string(now_epoch) +
+				    " expired at " + format_time(config.bearer_token_expires_at) +
+				    " (current time: " + format_time(now_epoch) +
 				    "). Refresh the token via your application and update http_config.");
 			}
 		}
