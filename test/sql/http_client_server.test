@@ -25,7 +25,7 @@ FROM (SELECT http_get('http://localhost:8444/fast', headers := MAP {'X-Test': 'c
 
 # Response headers are MAP(VARCHAR, VARCHAR)
 query I
-SELECT r.response_headers['Content-Type']
+SELECT r.response_headers['content-type']
 FROM (SELECT http_get('http://localhost:8444/fast') AS r);
 ----
 application/json

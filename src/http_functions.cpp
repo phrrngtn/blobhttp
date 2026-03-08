@@ -5,6 +5,7 @@
 #include "negotiate_auth.hpp"
 #include "rate_limiter.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <string>
@@ -293,7 +294,9 @@ static HttpResult ResponseToResult(const cpr::Response &response, const HttpBind
 	result.response_status_code = static_cast<int>(response.status_code);
 	result.response_status = response.status_line;
 	for (auto &[k, v] : response.header) {
-		result.response_headers.emplace_back(k, v);
+		std::string lower_k = k;
+		std::transform(lower_k.begin(), lower_k.end(), lower_k.begin(), ::tolower);
+		result.response_headers.emplace_back(lower_k, v);
 	}
 	result.response_body = response.text;
 	result.response_url = response.url.str();
