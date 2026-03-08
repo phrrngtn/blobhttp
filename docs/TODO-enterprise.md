@@ -82,9 +82,113 @@ where the request should actually be re-sent.
 
 ## Mutual TLS (mTLS)
 
-Client certificate authentication for zero-trust environments. The `ca_bundle`
-config field exists; adding `client_cert` and `client_key` fields would
-complete the picture. cpr supports this via `SslOptions`.
+**Implemented.** The `client_cert` and `client_key` config fields are now
+supported. See README for usage.
+
+## Expiring bearer tokens
+
+Many corporate environments issue short-lived bearer tokens via a token
+endpoint that itself requires authentication (often Kerberos/Negotiate).
+The pattern is:
+
+1. Authenticate to a token service using Negotiate (SPNEGO)
+2. Receive a bearer token with an expiry (e.g. 1 hour)
+3. Use that token for subsequent API calls
+4. Re-authenticate when the token expires
+
+Today this can be done manually in SQL:
+
+```sql
+-- Step 1: Get token (using negotiate_auth_header for the token endpoint)
+SELECT r.response_body
+FROM (SELECT http_get('https://auth.corp.com/token',
+    headers := MAP {'Authorization': negotiate_auth_header('https://auth.corp.com/token')}) AS r);
+
+-- Step 2: Set the token in config
+SET VARIABLE http_config = MAP {
+    'https://api.corp.com': '{"auth_type": "bearer", "bearer_token": "<paste token>"}'
+};
+```
+
+But this is tedious and doesn't handle expiry. A better approach would be
+extension-level token caching:
+
+- A process-global token cache keyed by token endpoint URL
+- Each entry stores: token, expiry timestamp, the auth method used to obtain it
+- On request, if the cached token is expired (or absent), the extension
+  automatically re-authenticates and caches the new token
+- Config fields: `token_endpoint`, `token_auth_type` (defaults to "negotiate"),
+  `token_expiry_field` (JSON path to extract expiry from the token response)
+
+```sql
+SET VARIABLE http_config = MAP {
+    'https://api.corp.com': '{
+        "auth_type": "bearer",
+        "token_endpoint": "https://auth.corp.com/token",
+        "token_auth_type": "negotiate"
+    }'
+};
+-- Now requests to api.corp.com automatically obtain and refresh tokens
+```
+
+The extension already has the building blocks: Negotiate auth, HTTP client,
+per-host config scoping, and process-global caches (rate limiters, sessions).
+The token cache would follow the same LRU pool pattern.
+
+Open questions:
+- Should the token response format be configurable, or assume a convention
+  (e.g. `{"access_token": "...", "expires_in": 3600}`)?
+- Should the extension support OAuth2 client_credentials grant as another
+  token_auth_type?
+- Thread safety: token refresh must be serialized per endpoint (mutex per
+  cache entry) to avoid thundering herd on expiry.
+
+## HashiCorp Vault integration
+
+Vault is a common secrets backend in enterprise environments. The extension
+could fetch secrets (bearer tokens, API keys, client certificates) from Vault
+at request time, rather than requiring them to be set in `http_config`.
+
+Two integration patterns:
+
+**1. Vault as a token/secret source (simpler)**
+
+A config field like `vault_secret_path` that tells the extension to read a
+secret from Vault before making the HTTP request. The secret value populates
+the bearer token (or other auth fields).
+
+```sql
+SET VARIABLE http_config = MAP {
+    'https://api.corp.com': '{
+        "auth_type": "bearer",
+        "vault_addr": "https://vault.corp.com",
+        "vault_secret_path": "secret/data/api-corp-com/token",
+        "vault_token_field": "access_token"
+    }'
+};
+```
+
+The extension would `GET` the Vault secret endpoint (using its own HTTP
+machinery), extract the token, and cache it with TTL awareness (Vault leases
+have TTLs). This is essentially the expiring-bearer-token pattern above, with
+Vault as the token endpoint.
+
+**2. Vault as a PKI backend (mTLS certificates)**
+
+Vault's PKI secrets engine can issue short-lived client certificates. The
+extension could request a certificate from Vault, write it to a temp file (or
+use in-memory SSL context if cpr supports it), and use it for mTLS. This is
+more complex but eliminates the need to manage certificate files on disk.
+
+**Authentication to Vault itself** is the bootstrap problem. Options:
+- Vault token in config (simple but the token itself needs management)
+- Kubernetes auth (if running in k8s — the service account JWT is available)
+- LDAP/Kerberos auth (the extension already has Negotiate — could use it to
+  authenticate to Vault if Vault is configured with Kerberos auth)
+
+Start with pattern (1) — Vault as a bearer token source. It's the most
+immediately useful and builds on the expiring-bearer-token cache. Pattern (2)
+is a natural follow-on once (1) works.
 
 ## Request tagging / correlation IDs
 
