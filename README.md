@@ -23,73 +23,90 @@ duckdb -unsigned -cmd "LOAD 'build/release/http_client.duckdb_extension';"
 
 ## HTTP Functions
 
-### Table functions: `http_get`, `http_post`, `http_put`, `http_delete`, `http_patch`, `http_head`, `http_options`
+### Per-verb scalar functions
 
-Each returns a single-row table with request and response details.
+Each returns a STRUCT with request and response details. Use a subquery or CTE
+to access individual fields via dot notation.
+
+`http_get`, `http_head`, `http_options`, `http_put`, and `http_delete` are
+idempotent — DuckDB may safely deduplicate identical calls within a query.
+`http_post` and `http_patch` are volatile — every call fires regardless.
 
 ```sql
--- Simple GET
-SELECT response_status_code, response_body
-FROM http_get('https://httpbin.org/get');
-```
-
-```sql
--- GET with query parameters
-SELECT json_extract_string(response_body, '$.args.q') AS search_term
-FROM http_get('https://httpbin.org/get', params := MAP {'q': 'duckdb', 'page': '1'});
+-- Simple GET with struct field access
+SELECT r.response_status_code, r.response_body
+FROM (SELECT http_get('https://httpbin.org/get') AS r);
 ```
 
 ```sql
 -- GET with custom headers
-SELECT json_extract_string(response_body, '$.headers.X-Api-Key') AS echoed_key
-FROM http_get('https://httpbin.org/get', headers := MAP {'X-Api-Key': 'secret123'});
+SELECT r.response_body
+FROM (SELECT http_get('https://httpbin.org/get',
+    headers := '{"X-Api-Key": "secret123"}') AS r);
 ```
 
 ```sql
--- POST with JSON body
-SELECT response_status_code,
-       json_extract_string(response_body, '$.json.name') AS name
-FROM http_post('https://httpbin.org/post', body := '{"name": "duckdb"}');
+-- POST with JSON body (volatile — always fires)
+SELECT r.response_status_code
+FROM (SELECT http_post('https://httpbin.org/post',
+    body := '{"name": "duckdb"}',
+    content_type := 'application/json') AS r);
 ```
 
 ```sql
 -- PUT with explicit content type
-SELECT response_status_code
-FROM http_put('https://httpbin.org/put',
+SELECT r.response_status_code
+FROM (SELECT http_put('https://httpbin.org/put',
     body := '<item><name>test</name></item>',
-    content_type := 'application/xml');
+    content_type := 'application/xml') AS r);
 ```
 
 ```sql
--- Disable SSL verification (for self-signed certs during testing)
-SELECT response_status_code
-FROM http_get('https://localhost:8443/health', verify_ssl := false);
+-- Data-driven batch: fetch from a list of URLs
+SELECT url, r.response_status_code AS status, round(r.elapsed, 3) AS seconds
+FROM (
+    SELECT url, http_get(url) AS r
+    FROM (VALUES ('https://httpbin.org/get'), ('https://httpbin.org/ip')) AS t(url)
+)
+ORDER BY url;
 ```
 
 ```sql
--- Custom timeout (seconds)
-SELECT response_status_code
-FROM http_get('https://httpbin.org/delay/2', timeout := 5);
+-- Batch API calls driven by table data
+SELECT e.endpoint_url, r.response_status_code AS status
+FROM (
+    SELECT e.endpoint_url, http_get(e.endpoint_url) AS r
+    FROM endpoints AS e
+    LEFT OUTER JOIN health_checks AS h ON h.url = e.endpoint_url
+    WHERE h.url IS NULL
+);
 ```
 
-### `http_do(method, url, ...)`
+### Generic scalar function: `http_request(method, url, ...)`
 
-Generic method for any HTTP verb.
+For dynamic methods or when the verb isn't known at query-writing time. Always
+volatile (every call fires).
 
 ```sql
-SELECT response_status_code
-FROM http_do('DELETE', 'https://httpbin.org/delete');
-
-SELECT response_status_code
-FROM http_do('PATCH', 'https://httpbin.org/patch', body := '{"patched": true}');
+SELECT r.response_status_code
+FROM (SELECT http_request('GET', 'https://httpbin.org/get') AS r);
 ```
 
-### Output columns
+### JSON variant: `http_request_json(method, url, ...)`
 
-All table functions return the same schema:
+Returns the same result as `http_request` but serialized as a JSON string via
+DuckDB's `to_json()`.
 
-| Column | Type | Description |
-|--------|------|-------------|
+```sql
+SELECT http_request_json('GET', 'https://httpbin.org/ip');
+```
+
+### STRUCT fields
+
+All scalar functions return a STRUCT with the same fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
 | `request_url` | VARCHAR | The URL as sent |
 | `request_method` | VARCHAR | HTTP method used |
 | `request_headers` | VARCHAR (JSON) | Headers sent, as a JSON object |
@@ -102,84 +119,7 @@ All table functions return the same schema:
 | `elapsed` | DOUBLE | Request duration in seconds |
 | `redirect_count` | INTEGER | Number of redirects followed |
 
-### Named parameters
-
-| Parameter | Type | Applies to | Description |
-|-----------|------|------------|-------------|
-| `headers` | MAP(VARCHAR, VARCHAR) | all | Custom request headers |
-| `params` | MAP(VARCHAR, VARCHAR) | all | URL query parameters (URL-encoded) |
-| `body` | VARCHAR | POST, PUT, PATCH, DO | Request body |
-| `content_type` | VARCHAR | POST, PUT, PATCH, DO | Content-Type header (defaults to `application/json` if body is set) |
-| `timeout` | INTEGER | all | Request timeout in seconds (overrides config) |
-| `verify_ssl` | BOOLEAN | all | SSL certificate verification (overrides config) |
-
-### Scalar functions
-
-Scalar functions return a STRUCT with the same fields as the table functions.
-Use dot notation or a subquery to access individual fields.
-
-#### Per-verb scalar functions (recommended)
-
-These follow HTTP idempotency semantics: `http_get_s`, `http_head_s`,
-`http_options_s`, `http_put_s`, and `http_delete_s` are idempotent — DuckDB
-may safely deduplicate identical calls within a query. `http_post_s` and
-`http_patch_s` are volatile — every call fires regardless.
-
-```sql
--- Simple GET with struct field access
-SELECT r.response_status_code, r.response_body
-FROM (SELECT http_get_s('https://httpbin.org/get') AS r);
-```
-
-```sql
--- POST (volatile — always fires)
-SELECT r.response_status_code
-FROM (SELECT http_post_s('https://httpbin.org/post',
-    body := '{"name": "duckdb"}',
-    content_type := 'application/json') AS r);
-```
-
-```sql
--- Data-driven batch: fetch from a list of URLs
-SELECT url, r.response_status_code AS status, round(r.elapsed, 3) AS seconds
-FROM (
-    SELECT url, http_get_s(url) AS r
-    FROM (VALUES ('https://httpbin.org/get'), ('https://httpbin.org/ip')) AS t(url)
-)
-ORDER BY url;
-```
-
-```sql
--- Batch API calls driven by table data
-SELECT e.endpoint_url, r.response_status_code AS status
-FROM (
-    SELECT e.endpoint_url, http_get_s(e.endpoint_url) AS r
-    FROM endpoints AS e
-    LEFT OUTER JOIN health_checks AS h ON h.url = e.endpoint_url
-    WHERE h.url IS NULL
-);
-```
-
-#### Generic scalar function: `http_request(method, url, ...)`
-
-For dynamic methods or when the verb isn't known at query-writing time. Always
-volatile (every call fires).
-
-```sql
-SELECT r.response_status_code
-FROM (SELECT http_request('GET', 'https://httpbin.org/get') AS r);
-```
-
-#### JSON variant: `http_request_json(method, url, ...)`
-
-Returns the same result as `http_request` but serialized as a JSON string via
-DuckDB's `to_json()`.
-
-```sql
-SELECT http_request_json('GET', 'https://httpbin.org/ip');
-```
-
-#### Scalar function parameters
+### Function parameters
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -191,7 +131,7 @@ SELECT http_request_json('GET', 'https://httpbin.org/ip');
 The generic `http_request` also takes `method` (VARCHAR) as the first
 parameter.
 
-#### Recommended pattern: subquery or CTE
+### Recommended pattern: subquery or CTE
 
 Always assign the scalar function result to an alias in a subquery or CTE,
 then access fields from the alias. This ensures the HTTP request fires exactly
@@ -200,7 +140,7 @@ once per row, regardless of how many fields you reference.
 ```sql
 -- Good: one request, access multiple fields
 WITH api_calls AS (
-    SELECT id, http_get_s('https://api.example.com/item/' || id) AS r
+    SELECT id, http_get('https://api.example.com/item/' || id) AS r
     FROM items
 )
 SELECT id, r.response_status_code, r.response_body, r.elapsed
@@ -208,8 +148,8 @@ FROM api_calls;
 
 -- Bad: fires two requests per row (DuckDB evaluates each expression separately)
 SELECT
-    http_get_s(url).response_status_code,
-    http_get_s(url).elapsed
+    http_get(url).response_status_code,
+    http_get(url).elapsed
 FROM urls;
 ```
 
@@ -252,8 +192,7 @@ SET VARIABLE http_config = MAP {
 The user-facing functions (`http_get`, `http_post`, etc.) are SQL macros that
 read `http_config` from the caller's connection via `getvariable()`, then pass
 it to the underlying C functions. This means configuration set via
-`SET VARIABLE` is correctly visible during function execution. Per-call
-parameters (`timeout :=`, `verify_ssl :=`) override the resolved config.
+`SET VARIABLE` is correctly visible during function execution.
 
 ### Scope resolution example
 
@@ -265,14 +204,17 @@ SET VARIABLE http_config = MAP {
 };
 
 -- Uses default config (timeout=30, no auth)
-SELECT * FROM http_get('https://other-site.com/data');
+SELECT r.response_status_code
+FROM (SELECT http_get('https://other-site.com/data') AS r);
 
 -- Matches 'https://api.example.com/' scope (bearer_token=abc, rate_limit=5/s)
-SELECT * FROM http_get('https://api.example.com/v1/users');
+SELECT r.response_status_code
+FROM (SELECT http_get('https://api.example.com/v1/users') AS r);
 
 -- Matches 'https://api.example.com/v2/' scope (bearer_token=xyz)
 -- Also inherits timeout=30 from default
-SELECT * FROM http_get('https://api.example.com/v2/users');
+SELECT r.response_status_code
+FROM (SELECT http_get('https://api.example.com/v2/users') AS r);
 ```
 
 ### Rate limiting
@@ -290,7 +232,7 @@ SET VARIABLE http_config = MAP {
 
 ### Parallel execution
 
-The scalar function `http_request` executes requests in parallel using
+The scalar functions execute requests in parallel using
 libcurl's multi interface (via cpr's `MultiPerform`). When DuckDB passes a
 chunk of rows to the scalar function, the extension fires up to
 `max_concurrent` requests simultaneously, then moves to the next batch.
@@ -328,9 +270,8 @@ server responds with 429, the rate limiter's TAT (Theoretical Arrival Time) is
 pushed forward by the `Retry-After` value, automatically slowing subsequent
 batches.
 
-Table functions (`http_get`, `http_post`, etc.) execute one request at a time
-since they return a single row per invocation. Use the scalar function for
-data-driven workloads where parallelism matters.
+Parallelism is automatic for data-driven workloads where the scalar function
+is applied across multiple rows.
 
 ### Rate limiter diagnostics
 
@@ -414,11 +355,9 @@ SELECT negotiate_auth_header('https://intranet.example.com/api/data');
 Use it to authenticate HTTP requests to Kerberos-protected services:
 
 ```sql
-SELECT response_status_code, response_body
-FROM http_get('https://intranet.example.com/api/data',
-    headers := MAP {
-        'Authorization': negotiate_auth_header('https://intranet.example.com/api/data')
-    });
+SELECT r.response_status_code, r.response_body
+FROM (SELECT http_get('https://intranet.example.com/api/data',
+    headers := '{"Authorization": "' || negotiate_auth_header('https://intranet.example.com/api/data') || '"}') AS r);
 ```
 
 Or configure it globally so all requests to a host auto-authenticate:
@@ -429,7 +368,8 @@ SET VARIABLE http_config = MAP {
 };
 
 -- No explicit headers needed — the token is generated and injected automatically
-SELECT * FROM http_get('https://intranet.example.com/api/data');
+SELECT r.response_status_code
+FROM (SELECT http_get('https://intranet.example.com/api/data') AS r);
 ```
 
 ### `negotiate_auth_header_json(url)`
@@ -613,16 +553,13 @@ python3 test/flask_negotiate_server.py
 # In another terminal
 duckdb -unsigned -cmd "LOAD 'build/release/http_client.duckdb_extension';" -c "
     -- Health check (no auth required)
-    SELECT response_status_code
-    FROM http_get('https://localhost:8443/health', verify_ssl := false);
+    SELECT r.response_status_code
+    FROM (SELECT http_get('https://localhost:8443/health') AS r);
 
     -- Authenticated request
-    SELECT response_status_code, response_body
-    FROM http_get('https://localhost:8443/data.json',
-        headers := MAP {
-            'Authorization': negotiate_auth_header('https://localhost:8443/data.json')
-        },
-        verify_ssl := false);
+    SELECT r.response_status_code, r.response_body
+    FROM (SELECT http_get('https://localhost:8443/data.json',
+        headers := '{\"Authorization\": \"' || negotiate_auth_header('https://localhost:8443/data.json') || '\"}') AS r);
 "
 ```
 

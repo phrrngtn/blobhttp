@@ -1000,101 +1000,36 @@ void RegisterHttpMacros(duckdb_connection connection) {
 		"CREATE OR REPLACE MACRO _http_config() AS "
 		"IFNULL(TRY_CAST(getvariable('http_config') AS MAP(VARCHAR, VARCHAR)), MAP {})");
 
-	// Table function macros: http_get, http_post, etc.
-	// These read http_config from the caller's connection and pass it to _http_raw.
-	TryRegisterMacro(connection,
-		"CREATE OR REPLACE MACRO http_get(url, headers := NULL::MAP(VARCHAR, VARCHAR), "
-		"params := NULL::MAP(VARCHAR, VARCHAR), timeout := NULL::INTEGER, "
-		"verify_ssl := NULL::BOOLEAN) AS TABLE "
-		"SELECT * FROM _http_raw('GET', url, headers := headers, params := params, "
-		"timeout := timeout, verify_ssl := verify_ssl, _config := _http_config())");
-
-	TryRegisterMacro(connection,
-		"CREATE OR REPLACE MACRO http_post(url, headers := NULL::MAP(VARCHAR, VARCHAR), "
-		"params := NULL::MAP(VARCHAR, VARCHAR), body := NULL::VARCHAR, "
-		"content_type := NULL::VARCHAR, timeout := NULL::INTEGER, "
-		"verify_ssl := NULL::BOOLEAN) AS TABLE "
-		"SELECT * FROM _http_raw('POST', url, headers := headers, params := params, "
-		"body := body, content_type := content_type, "
-		"timeout := timeout, verify_ssl := verify_ssl, _config := _http_config())");
-
-	TryRegisterMacro(connection,
-		"CREATE OR REPLACE MACRO http_put(url, headers := NULL::MAP(VARCHAR, VARCHAR), "
-		"params := NULL::MAP(VARCHAR, VARCHAR), body := NULL::VARCHAR, "
-		"content_type := NULL::VARCHAR, timeout := NULL::INTEGER, "
-		"verify_ssl := NULL::BOOLEAN) AS TABLE "
-		"SELECT * FROM _http_raw('PUT', url, headers := headers, params := params, "
-		"body := body, content_type := content_type, "
-		"timeout := timeout, verify_ssl := verify_ssl, _config := _http_config())");
-
-	TryRegisterMacro(connection,
-		"CREATE OR REPLACE MACRO http_delete(url, headers := NULL::MAP(VARCHAR, VARCHAR), "
-		"params := NULL::MAP(VARCHAR, VARCHAR), timeout := NULL::INTEGER, "
-		"verify_ssl := NULL::BOOLEAN) AS TABLE "
-		"SELECT * FROM _http_raw('DELETE', url, headers := headers, params := params, "
-		"timeout := timeout, verify_ssl := verify_ssl, _config := _http_config())");
-
-	TryRegisterMacro(connection,
-		"CREATE OR REPLACE MACRO http_patch(url, headers := NULL::MAP(VARCHAR, VARCHAR), "
-		"params := NULL::MAP(VARCHAR, VARCHAR), body := NULL::VARCHAR, "
-		"content_type := NULL::VARCHAR, timeout := NULL::INTEGER, "
-		"verify_ssl := NULL::BOOLEAN) AS TABLE "
-		"SELECT * FROM _http_raw('PATCH', url, headers := headers, params := params, "
-		"body := body, content_type := content_type, "
-		"timeout := timeout, verify_ssl := verify_ssl, _config := _http_config())");
-
-	TryRegisterMacro(connection,
-		"CREATE OR REPLACE MACRO http_head(url, headers := NULL::MAP(VARCHAR, VARCHAR), "
-		"params := NULL::MAP(VARCHAR, VARCHAR), timeout := NULL::INTEGER, "
-		"verify_ssl := NULL::BOOLEAN) AS TABLE "
-		"SELECT * FROM _http_raw('HEAD', url, headers := headers, params := params, "
-		"timeout := timeout, verify_ssl := verify_ssl, _config := _http_config())");
-
-	TryRegisterMacro(connection,
-		"CREATE OR REPLACE MACRO http_options(url, headers := NULL::MAP(VARCHAR, VARCHAR), "
-		"params := NULL::MAP(VARCHAR, VARCHAR), timeout := NULL::INTEGER, "
-		"verify_ssl := NULL::BOOLEAN) AS TABLE "
-		"SELECT * FROM _http_raw('OPTIONS', url, headers := headers, params := params, "
-		"timeout := timeout, verify_ssl := verify_ssl, _config := _http_config())");
-
-	TryRegisterMacro(connection,
-		"CREATE OR REPLACE MACRO http_do(method, url, headers := NULL::MAP(VARCHAR, VARCHAR), "
-		"params := NULL::MAP(VARCHAR, VARCHAR), body := NULL::VARCHAR, "
-		"content_type := NULL::VARCHAR, timeout := NULL::INTEGER, "
-		"verify_ssl := NULL::BOOLEAN) AS TABLE "
-		"SELECT * FROM _http_raw(method, url, headers := headers, params := params, "
-		"body := body, content_type := content_type, "
-		"timeout := timeout, verify_ssl := verify_ssl, _config := _http_config())");
-
 	// --- Scalar macros ---
-	// Per-verb scalar macros route to the idempotent or volatile variant
-	// based on HTTP method semantics.
+	// Per-verb scalar macros route to the idempotent or volatile C function
+	// based on HTTP method semantics. All return STRUCT.
+	// Use CTE/subquery pattern to access fields: SELECT r.field FROM (SELECT http_get(url) AS r)
 
 	// Idempotent verbs: safe to deduplicate identical calls within a query.
 	// GET, HEAD, OPTIONS are read-only; PUT and DELETE are idempotent by spec.
 	const char *idempotent_scalar_macros[] = {
-		"CREATE OR REPLACE MACRO http_get_s(url, "
+		"CREATE OR REPLACE MACRO http_get(url, "
 		"headers := NULL::VARCHAR) AS "
 		"_http_raw_request('GET', url, headers, NULL, NULL, "
 		"CAST(_http_config() AS JSON))",
 
-		"CREATE OR REPLACE MACRO http_head_s(url, "
+		"CREATE OR REPLACE MACRO http_head(url, "
 		"headers := NULL::VARCHAR) AS "
 		"_http_raw_request('HEAD', url, headers, NULL, NULL, "
 		"CAST(_http_config() AS JSON))",
 
-		"CREATE OR REPLACE MACRO http_options_s(url, "
+		"CREATE OR REPLACE MACRO http_options(url, "
 		"headers := NULL::VARCHAR) AS "
 		"_http_raw_request('OPTIONS', url, headers, NULL, NULL, "
 		"CAST(_http_config() AS JSON))",
 
-		"CREATE OR REPLACE MACRO http_put_s(url, "
+		"CREATE OR REPLACE MACRO http_put(url, "
 		"headers := NULL::VARCHAR, body := NULL::VARCHAR, "
 		"content_type := NULL::VARCHAR) AS "
 		"_http_raw_request('PUT', url, headers, body, content_type, "
 		"CAST(_http_config() AS JSON))",
 
-		"CREATE OR REPLACE MACRO http_delete_s(url, "
+		"CREATE OR REPLACE MACRO http_delete(url, "
 		"headers := NULL::VARCHAR) AS "
 		"_http_raw_request('DELETE', url, headers, NULL, NULL, "
 		"CAST(_http_config() AS JSON))",
@@ -1105,13 +1040,13 @@ void RegisterHttpMacros(duckdb_connection connection) {
 
 	// Non-idempotent verbs: volatile, every call fires.
 	const char *volatile_scalar_macros[] = {
-		"CREATE OR REPLACE MACRO http_post_s(url, "
+		"CREATE OR REPLACE MACRO http_post(url, "
 		"headers := NULL::VARCHAR, body := NULL::VARCHAR, "
 		"content_type := NULL::VARCHAR) AS "
 		"_http_raw_request_volatile('POST', url, headers, body, content_type, "
 		"CAST(_http_config() AS JSON))",
 
-		"CREATE OR REPLACE MACRO http_patch_s(url, "
+		"CREATE OR REPLACE MACRO http_patch(url, "
 		"headers := NULL::VARCHAR, body := NULL::VARCHAR, "
 		"content_type := NULL::VARCHAR) AS "
 		"_http_raw_request_volatile('PATCH', url, headers, body, content_type, "

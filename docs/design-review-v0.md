@@ -9,27 +9,32 @@ The public API is:
 
 | Function | Kind | Purpose |
 |----------|------|---------|
-| `http_get`, `http_post`, ... | Table macro | Interactive single-request use |
-| `http_do(method, url, ...)` | Table macro | Generic method variant |
-| `http_request(method, url, ...)` | Scalar macro | Data-driven batch use |
+| `http_get`, `http_head`, `http_options`, `http_delete` | Scalar macro (idempotent) | Per-verb GET/HEAD/OPTIONS/DELETE |
+| `http_put` | Scalar macro (idempotent) | PUT with body |
+| `http_post`, `http_patch` | Scalar macro (volatile) | POST/PATCH — every call fires |
+| `http_request(method, url, ...)` | Scalar macro (volatile) | Generic method variant |
+| `http_request_json(method, url, ...)` | Scalar macro (volatile) | JSON variant via `to_json()` |
 | `negotiate_auth_header(url)` | Scalar | SPNEGO token generation |
 | `negotiate_auth_header_json(url)` | Scalar | SPNEGO token + debug metadata |
 | `http_rate_limit_stats()` | Table | Rate limiter and request diagnostics |
 
-Plus two internal functions (`_http_raw`, `_http_raw_request`) and one helper
-macro (`_http_config`) that are not intended for direct use.
+Plus two internal C functions (`_http_raw_request`, `_http_raw_request_volatile`)
+and one helper macro (`_http_config`) that are not intended for direct use.
 
-This is a small surface. The table functions are syntactic sugar over the
-scalar function; the scalar function is where data-driven work happens. The
-Negotiate helpers exist because SPNEGO token generation can't be folded into a
-config flag without a pre-flight step.
+All scalar functions return a STRUCT with the same fields (request_url,
+response_status_code, response_body, response_headers, etc.). Access fields
+via the CTE/subquery pattern: `SELECT r.field FROM (SELECT http_get(url) AS r)`.
+
+The Negotiate helpers exist because SPNEGO token generation can't be folded
+into a config flag without a pre-flight step.
 
 ### Assessment
 
-The surface feels right-sized. The one wart was the scalar function requiring
-five positional arguments (`http_request('GET', url, NULL, NULL, NULL)`) —
-this has been fixed by giving the macro named parameters with defaults, so
-`http_request('GET', url)` now works.
+The surface feels right-sized. Per-verb macros route to the appropriate C
+function variant based on HTTP method semantics — idempotent verbs (GET, HEAD,
+OPTIONS, PUT, DELETE) allow the optimizer to deduplicate identical calls, while
+non-idempotent verbs (POST, PATCH) are marked volatile so every call fires.
+Named parameters with defaults eliminate the need for trailing NULLs.
 
 ## Responsibility boundaries
 
