@@ -41,12 +41,19 @@ SELECT r.response_status_code FROM (SELECT http_get('https://httpbin.org/get') A
 ----
 200
 
-# GET with custom headers
+# GET with custom headers (MAP syntax)
 query I
 SELECT json_extract_string(r.response_body, '$.headers.X-Custom')
-FROM (SELECT http_get('https://httpbin.org/get', headers := '{"X-Custom": "test123"}') AS r);
+FROM (SELECT http_get('https://httpbin.org/get', headers := MAP {'X-Custom': 'test123'}) AS r);
 ----
 test123
+
+# Response headers are MAP(VARCHAR, VARCHAR)
+query I
+SELECT r.response_headers['content-type']
+FROM (SELECT http_get('https://httpbin.org/get') AS r);
+----
+application/json
 
 # ---------------------------------------------------------------------------
 # http_post: volatile scalar POST (returns STRUCT)

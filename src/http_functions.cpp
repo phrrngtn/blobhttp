@@ -103,13 +103,59 @@ static std::string ExtractHost(const std::string &url) {
 	return url.substr(host_start, host_end - host_start);
 }
 
-//! Convert response headers to a JSON object string.
-static std::string HeadersToJson(const cpr::Header &headers) {
-	nlohmann::json j = nlohmann::json::object();
-	for (auto &[key, value] : headers) {
-		j[key] = value;
+//! Read a MAP(VARCHAR, VARCHAR) from a data chunk vector at the given row.
+//! MAPs are stored as LIST(STRUCT(key, value)). Returns empty if NULL.
+static std::vector<std::pair<std::string, std::string>>
+ReadMapVector(duckdb_vector map_vec, uint64_t *validity, idx_t row) {
+	std::vector<std::pair<std::string, std::string>> result;
+	if (validity && !(validity[row / 64] & (1ULL << (row % 64)))) {
+		return result;
 	}
-	return j.dump();
+
+	auto *entries = (duckdb_list_entry *)duckdb_vector_get_data(map_vec);
+	auto offset = entries[row].offset;
+	auto length = entries[row].length;
+
+	duckdb_vector child = duckdb_list_vector_get_child(map_vec);
+	duckdb_vector key_vec = duckdb_struct_vector_get_child(child, 0);
+	duckdb_vector val_vec = duckdb_struct_vector_get_child(child, 1);
+
+	auto *key_data = (duckdb_string_t *)duckdb_vector_get_data(key_vec);
+	auto *val_data = (duckdb_string_t *)duckdb_vector_get_data(val_vec);
+
+	for (idx_t i = 0; i < length; i++) {
+		idx_t idx = offset + i;
+		auto k = std::string(duckdb_string_t_data(&key_data[idx]),
+		                     duckdb_string_t_length(key_data[idx]));
+		auto v = std::string(duckdb_string_t_data(&val_data[idx]),
+		                     duckdb_string_t_length(val_data[idx]));
+		result.emplace_back(std::move(k), std::move(v));
+	}
+	return result;
+}
+
+//! Write a MAP(VARCHAR, VARCHAR) entry into a MAP vector at the given row.
+//! The caller must reserve space and set the final list size after all rows.
+//! @param map_vec   the MAP vector (top-level column or struct child)
+//! @param row       row index for the list entry
+//! @param kvs       key-value pairs to write
+//! @param offset    running offset into the list child; updated after writing
+static void WriteMapEntry(duckdb_vector map_vec, idx_t row,
+                          const std::vector<std::pair<std::string, std::string>> &kvs,
+                          idx_t &offset) {
+	auto *entries = (duckdb_list_entry *)duckdb_vector_get_data(map_vec);
+	entries[row].offset = offset;
+	entries[row].length = kvs.size();
+
+	duckdb_vector child = duckdb_list_vector_get_child(map_vec);
+	duckdb_vector key_vec = duckdb_struct_vector_get_child(child, 0);
+	duckdb_vector val_vec = duckdb_struct_vector_get_child(child, 1);
+
+	for (auto &[k, v] : kvs) {
+		duckdb_vector_assign_string_element_len(key_vec, offset, k.c_str(), k.length());
+		duckdb_vector_assign_string_element_len(val_vec, offset, v.c_str(), v.length());
+		offset++;
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -152,11 +198,11 @@ static void DestroyInitData(void *data) {
 struct HttpResult {
 	std::string request_url;
 	std::string request_method;
-	std::string request_headers_json;
+	std::vector<std::pair<std::string, std::string>> request_headers;
 	std::string request_body;
 	int response_status_code = 0;
 	std::string response_status;
-	std::string response_headers_json;
+	std::vector<std::pair<std::string, std::string>> response_headers;
 	std::string response_body;
 	std::string response_url;
 	double elapsed = 0.0;
@@ -247,16 +293,16 @@ static HttpResult ResponseToResult(const cpr::Response &response, const HttpBind
 	result.request_url = bind_data.url;
 	result.request_method = bind_data.method;
 
-	nlohmann::json req_headers_json = nlohmann::json::object();
 	for (auto &[k, v] : req_headers) {
-		req_headers_json[k] = v;
+		result.request_headers.emplace_back(k, v);
 	}
-	result.request_headers_json = req_headers_json.dump();
 	result.request_body = bind_data.body;
 
 	result.response_status_code = static_cast<int>(response.status_code);
 	result.response_status = response.status_line;
-	result.response_headers_json = HeadersToJson(response.header);
+	for (auto &[k, v] : response.header) {
+		result.response_headers.emplace_back(k, v);
+	}
 	result.response_body = response.text;
 	result.response_url = response.url.str();
 	result.elapsed = response.elapsed;
@@ -451,14 +497,15 @@ static void HttpRawBind(duckdb_bind_info info) {
 	duckdb_logical_type varchar_type = duckdb_create_logical_type(DUCKDB_TYPE_VARCHAR);
 	duckdb_logical_type int_type = duckdb_create_logical_type(DUCKDB_TYPE_INTEGER);
 	duckdb_logical_type double_type = duckdb_create_logical_type(DUCKDB_TYPE_DOUBLE);
+	duckdb_logical_type map_type = duckdb_create_map_type(varchar_type, varchar_type);
 
 	duckdb_bind_add_result_column(info, "request_url", varchar_type);
 	duckdb_bind_add_result_column(info, "request_method", varchar_type);
-	duckdb_bind_add_result_column(info, "request_headers", varchar_type);
+	duckdb_bind_add_result_column(info, "request_headers", map_type);
 	duckdb_bind_add_result_column(info, "request_body", varchar_type);
 	duckdb_bind_add_result_column(info, "response_status_code", int_type);
 	duckdb_bind_add_result_column(info, "response_status", varchar_type);
-	duckdb_bind_add_result_column(info, "response_headers", varchar_type);
+	duckdb_bind_add_result_column(info, "response_headers", map_type);
 	duckdb_bind_add_result_column(info, "response_body", varchar_type);
 	duckdb_bind_add_result_column(info, "response_url", varchar_type);
 	duckdb_bind_add_result_column(info, "elapsed", double_type);
@@ -467,6 +514,7 @@ static void HttpRawBind(duckdb_bind_info info) {
 	duckdb_destroy_logical_type(&varchar_type);
 	duckdb_destroy_logical_type(&int_type);
 	duckdb_destroy_logical_type(&double_type);
+	duckdb_destroy_logical_type(&map_type);
 
 	duckdb_bind_set_cardinality(info, 1, true);
 	duckdb_bind_set_bind_data(info, bind_data, DestroyBindData);
@@ -511,14 +559,21 @@ static void HttpExecute(duckdb_function_info info, duckdb_data_chunk output) {
 		auto *data = (double *)duckdb_vector_get_data(vec);
 		data[0] = val;
 	};
+	auto set_map = [&](idx_t col, const std::vector<std::pair<std::string, std::string>> &kvs) {
+		duckdb_vector vec = duckdb_data_chunk_get_vector(output, col);
+		duckdb_list_vector_reserve(vec, kvs.size());
+		idx_t offset = 0;
+		WriteMapEntry(vec, 0, kvs, offset);
+		duckdb_list_vector_set_size(vec, offset);
+	};
 
 	set_varchar(0, result.request_url);
 	set_varchar(1, result.request_method);
-	set_varchar(2, result.request_headers_json);
+	set_map(2, result.request_headers);
 	set_varchar(3, result.request_body);
 	set_int(4, result.response_status_code);
 	set_varchar(5, result.response_status);
-	set_varchar(6, result.response_headers_json);
+	set_map(6, result.response_headers);
 	set_varchar(7, result.response_body);
 	set_varchar(8, result.response_url);
 	set_double(9, result.elapsed);
@@ -602,8 +657,10 @@ static std::string ReadVarchar(duckdb_vector vec, uint64_t *validity, idx_t row)
 	return std::string(str, len);
 }
 
-//! Write an HttpResult into the struct output vector at the given row index.
-static void WriteResultToStruct(duckdb_vector output, idx_t row, const HttpResult &result) {
+//! Write non-MAP fields of an HttpResult into the struct output vector at the given row index.
+//! MAP fields (request_headers, response_headers) are written separately in bulk
+//! because they share a list child vector across rows and need coordinated offsets.
+static void WriteResultScalarFields(duckdb_vector output, idx_t row, const HttpResult &result) {
 	auto set_varchar = [&](idx_t col, const std::string &val) {
 		duckdb_vector vec = duckdb_struct_vector_get_child(output, col);
 		duckdb_vector_assign_string_element_len(vec, row, val.c_str(), val.length());
@@ -621,11 +678,11 @@ static void WriteResultToStruct(duckdb_vector output, idx_t row, const HttpResul
 
 	set_varchar(0, result.request_url);
 	set_varchar(1, result.request_method);
-	set_varchar(2, result.request_headers_json);
+	// field 2 (request_headers) is MAP — written in bulk
 	set_varchar(3, result.request_body);
 	set_int(4, result.response_status_code);
 	set_varchar(5, result.response_status);
-	set_varchar(6, result.response_headers_json);
+	// field 6 (response_headers) is MAP — written in bulk
 	set_varchar(7, result.response_body);
 	set_varchar(8, result.response_url);
 	set_double(9, result.elapsed);
@@ -638,10 +695,10 @@ static void HttpRawRequestScalarFunc(duckdb_function_info info, duckdb_data_chun
 
 	duckdb_vector method_vec = duckdb_data_chunk_get_vector(input, 0);
 	duckdb_vector url_vec = duckdb_data_chunk_get_vector(input, 1);
-	duckdb_vector headers_vec = duckdb_data_chunk_get_vector(input, 2);
+	duckdb_vector headers_vec = duckdb_data_chunk_get_vector(input, 2);  // MAP(VARCHAR, VARCHAR)
 	duckdb_vector body_vec = duckdb_data_chunk_get_vector(input, 3);
 	duckdb_vector ct_vec = duckdb_data_chunk_get_vector(input, 4);
-	duckdb_vector config_vec = duckdb_data_chunk_get_vector(input, 5);
+	duckdb_vector config_vec = duckdb_data_chunk_get_vector(input, 5);  // config JSON string
 
 	auto *method_validity = duckdb_vector_get_validity(method_vec);
 	auto *url_validity = duckdb_vector_get_validity(url_vec);
@@ -676,7 +733,6 @@ static void HttpRawRequestScalarFunc(duckdb_function_info info, duckdb_data_chun
 			c = toupper(c);
 		}
 
-		auto headers_str = ReadVarchar(headers_vec, headers_validity, row);
 		auto body = ReadVarchar(body_vec, body_validity, row);
 		auto content_type = ReadVarchar(ct_vec, ct_validity, row);
 		auto config_json = ReadVarchar(config_vec, config_validity, row);
@@ -684,7 +740,7 @@ static void HttpRawRequestScalarFunc(duckdb_function_info info, duckdb_data_chun
 		auto &req = rows[row];
 		req.bind_data.method = method;
 		req.bind_data.url = url;
-		req.bind_data.headers = ParseJsonObject(headers_str.c_str(), headers_str.size());
+		req.bind_data.headers = ReadMapVector(headers_vec, headers_validity, row);
 		req.bind_data.body = body;
 		req.bind_data.content_type = content_type;
 		req.bind_data.config_entries = ParseJsonObject(config_json.c_str(), config_json.size());
@@ -748,9 +804,33 @@ static void HttpRawRequestScalarFunc(duckdb_function_info info, duckdb_data_chun
 	}
 
 	// --- Phase 3: Write results to struct output vector ---
+
+	// Write scalar (non-MAP) fields per row
 	for (idx_t row = 0; row < input_size; row++) {
-		WriteResultToStruct(output, row, results[row]);
+		WriteResultScalarFields(output, row, results[row]);
 	}
+
+	// Write MAP fields (request_headers, response_headers) in bulk.
+	// MAP vectors share a single list child across all rows, so we must
+	// reserve the total capacity and write with coordinated offsets.
+	idx_t total_req_headers = 0, total_resp_headers = 0;
+	for (idx_t row = 0; row < input_size; row++) {
+		total_req_headers += results[row].request_headers.size();
+		total_resp_headers += results[row].response_headers.size();
+	}
+
+	duckdb_vector req_headers_map = duckdb_struct_vector_get_child(output, 2);
+	duckdb_vector resp_headers_map = duckdb_struct_vector_get_child(output, 6);
+	duckdb_list_vector_reserve(req_headers_map, total_req_headers);
+	duckdb_list_vector_reserve(resp_headers_map, total_resp_headers);
+
+	idx_t req_offset = 0, resp_offset = 0;
+	for (idx_t row = 0; row < input_size; row++) {
+		WriteMapEntry(req_headers_map, row, results[row].request_headers, req_offset);
+		WriteMapEntry(resp_headers_map, row, results[row].response_headers, resp_offset);
+	}
+	duckdb_list_vector_set_size(req_headers_map, total_req_headers);
+	duckdb_list_vector_set_size(resp_headers_map, total_resp_headers);
 }
 
 // Build the STRUCT return type matching the table function's output schema.
@@ -758,11 +838,12 @@ static duckdb_logical_type CreateHttpResultStructType() {
 	duckdb_logical_type varchar_type = duckdb_create_logical_type(DUCKDB_TYPE_VARCHAR);
 	duckdb_logical_type int_type = duckdb_create_logical_type(DUCKDB_TYPE_INTEGER);
 	duckdb_logical_type double_type = duckdb_create_logical_type(DUCKDB_TYPE_DOUBLE);
+	duckdb_logical_type map_type = duckdb_create_map_type(varchar_type, varchar_type);
 
 	duckdb_logical_type member_types[] = {
-	    varchar_type, varchar_type, varchar_type, varchar_type,  // request_url, method, headers, body
+	    varchar_type, varchar_type, map_type,     varchar_type,  // request_url, method, headers, body
 	    int_type,                                                 // response_status_code
-	    varchar_type, varchar_type, varchar_type, varchar_type,  // response_status, headers, body, url
+	    varchar_type, map_type,     varchar_type, varchar_type,  // response_status, headers, body, url
 	    double_type,                                              // elapsed
 	    int_type                                                  // redirect_count
 	};
@@ -779,6 +860,7 @@ static duckdb_logical_type CreateHttpResultStructType() {
 	duckdb_destroy_logical_type(&varchar_type);
 	duckdb_destroy_logical_type(&int_type);
 	duckdb_destroy_logical_type(&double_type);
+	duckdb_destroy_logical_type(&map_type);
 
 	return struct_type;
 }
@@ -791,11 +873,12 @@ static void RegisterHttpScalarVariant(duckdb_connection connection, const char *
 	duckdb_scalar_function_set_name(function, name);
 
 	duckdb_logical_type varchar_type = duckdb_create_logical_type(DUCKDB_TYPE_VARCHAR);
+	duckdb_logical_type map_type = duckdb_create_map_type(varchar_type, varchar_type);
 
-	// (method, url, headers_json, body, content_type, config_json)
+	// (method, url, headers_map, body, content_type, config_json)
 	duckdb_scalar_function_add_parameter(function, varchar_type); // method
 	duckdb_scalar_function_add_parameter(function, varchar_type); // url
-	duckdb_scalar_function_add_parameter(function, varchar_type); // headers (JSON string)
+	duckdb_scalar_function_add_parameter(function, map_type);     // headers MAP(VARCHAR, VARCHAR)
 	duckdb_scalar_function_add_parameter(function, varchar_type); // body
 	duckdb_scalar_function_add_parameter(function, varchar_type); // content_type
 	duckdb_scalar_function_add_parameter(function, varchar_type); // config (JSON string)
@@ -803,6 +886,7 @@ static void RegisterHttpScalarVariant(duckdb_connection connection, const char *
 	duckdb_logical_type struct_type = CreateHttpResultStructType();
 	duckdb_scalar_function_set_return_type(function, struct_type);
 	duckdb_destroy_logical_type(&struct_type);
+	duckdb_destroy_logical_type(&map_type);
 	duckdb_destroy_logical_type(&varchar_type);
 
 	duckdb_scalar_function_set_function(function, HttpRawRequestScalarFunc);
@@ -1007,30 +1091,34 @@ void RegisterHttpMacros(duckdb_connection connection) {
 
 	// Idempotent verbs: safe to deduplicate identical calls within a query.
 	// GET, HEAD, OPTIONS are read-only; PUT and DELETE are idempotent by spec.
+	// Headers are MAP(VARCHAR, VARCHAR) — passed directly to the C function.
+	// Config is a JSON string — the macro reads _http_config() and casts to JSON
+	// for the C function, which uses nlohmann to parse the (potentially nested)
+	// per-scope config values.
 	const char *idempotent_scalar_macros[] = {
 		"CREATE OR REPLACE MACRO http_get(url, "
-		"headers := NULL::VARCHAR) AS "
+		"headers := NULL::MAP(VARCHAR, VARCHAR)) AS "
 		"_http_raw_request('GET', url, headers, NULL, NULL, "
 		"CAST(_http_config() AS JSON))",
 
 		"CREATE OR REPLACE MACRO http_head(url, "
-		"headers := NULL::VARCHAR) AS "
+		"headers := NULL::MAP(VARCHAR, VARCHAR)) AS "
 		"_http_raw_request('HEAD', url, headers, NULL, NULL, "
 		"CAST(_http_config() AS JSON))",
 
 		"CREATE OR REPLACE MACRO http_options(url, "
-		"headers := NULL::VARCHAR) AS "
+		"headers := NULL::MAP(VARCHAR, VARCHAR)) AS "
 		"_http_raw_request('OPTIONS', url, headers, NULL, NULL, "
 		"CAST(_http_config() AS JSON))",
 
 		"CREATE OR REPLACE MACRO http_put(url, "
-		"headers := NULL::VARCHAR, body := NULL::VARCHAR, "
+		"headers := NULL::MAP(VARCHAR, VARCHAR), body := NULL::VARCHAR, "
 		"content_type := NULL::VARCHAR) AS "
 		"_http_raw_request('PUT', url, headers, body, content_type, "
 		"CAST(_http_config() AS JSON))",
 
 		"CREATE OR REPLACE MACRO http_delete(url, "
-		"headers := NULL::VARCHAR) AS "
+		"headers := NULL::MAP(VARCHAR, VARCHAR)) AS "
 		"_http_raw_request('DELETE', url, headers, NULL, NULL, "
 		"CAST(_http_config() AS JSON))",
 	};
@@ -1041,13 +1129,13 @@ void RegisterHttpMacros(duckdb_connection connection) {
 	// Non-idempotent verbs: volatile, every call fires.
 	const char *volatile_scalar_macros[] = {
 		"CREATE OR REPLACE MACRO http_post(url, "
-		"headers := NULL::VARCHAR, body := NULL::VARCHAR, "
+		"headers := NULL::MAP(VARCHAR, VARCHAR), body := NULL::VARCHAR, "
 		"content_type := NULL::VARCHAR) AS "
 		"_http_raw_request_volatile('POST', url, headers, body, content_type, "
 		"CAST(_http_config() AS JSON))",
 
 		"CREATE OR REPLACE MACRO http_patch(url, "
-		"headers := NULL::VARCHAR, body := NULL::VARCHAR, "
+		"headers := NULL::MAP(VARCHAR, VARCHAR), body := NULL::VARCHAR, "
 		"content_type := NULL::VARCHAR) AS "
 		"_http_raw_request_volatile('PATCH', url, headers, body, content_type, "
 		"CAST(_http_config() AS JSON))",
@@ -1060,7 +1148,7 @@ void RegisterHttpMacros(duckdb_connection connection) {
 	// (we can't know at compile time whether it's idempotent).
 	TryRegisterMacro(connection,
 		"CREATE OR REPLACE MACRO http_request(method, url, "
-		"headers := NULL::VARCHAR, body := NULL::VARCHAR, "
+		"headers := NULL::MAP(VARCHAR, VARCHAR), body := NULL::VARCHAR, "
 		"content_type := NULL::VARCHAR) AS "
 		"_http_raw_request_volatile(method, url, headers, body, content_type, "
 		"CAST(_http_config() AS JSON))");
@@ -1068,7 +1156,7 @@ void RegisterHttpMacros(duckdb_connection connection) {
 	// JSON variants: wrap the STRUCT with to_json().
 	TryRegisterMacro(connection,
 		"CREATE OR REPLACE MACRO http_request_json(method, url, "
-		"headers := NULL::VARCHAR, body := NULL::VARCHAR, "
+		"headers := NULL::MAP(VARCHAR, VARCHAR), body := NULL::VARCHAR, "
 		"content_type := NULL::VARCHAR) AS "
 		"to_json(_http_raw_request_volatile(method, url, headers, body, content_type, "
 		"CAST(_http_config() AS JSON)))");
