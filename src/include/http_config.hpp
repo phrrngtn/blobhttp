@@ -1,9 +1,29 @@
 #pragma once
 
+#include <algorithm>
 #include <nlohmann/json.hpp>
 #include <string>
 
 namespace http_client {
+
+//! Extract hostname from a URL, lowercased. Returns empty string on failure.
+inline std::string ExtractHostFromUrl(const std::string &url) {
+	auto scheme_end = url.find("://");
+	if (scheme_end == std::string::npos) return "";
+	auto host_start = scheme_end + 3;
+	// Skip userinfo@ if present
+	auto at_pos = url.find('@', host_start);
+	auto slash_pos = url.find('/', host_start);
+	if (at_pos != std::string::npos && (slash_pos == std::string::npos || at_pos < slash_pos)) {
+		host_start = at_pos + 1;
+	}
+	// Host ends at '/', ':', or '?' — whichever comes first
+	auto host_end = url.find_first_of("/:?", host_start);
+	if (host_end == std::string::npos) host_end = url.length();
+	std::string host = url.substr(host_start, host_end - host_start);
+	std::transform(host.begin(), host.end(), host.begin(), ::tolower);
+	return host;
+}
 
 //! Resolved configuration for a single HTTP request.
 //! Built by merging: per-call overrides > scope match > default > hard-coded fallbacks.
@@ -97,16 +117,38 @@ inline HttpConfig ResolveConfig(const std::string &url,
 		}
 	}
 
-	// Find longest matching scope prefix
+	// Find longest matching scope: prefer prefix match, fall back to domain-suffix match
 	std::string best_scope;
 	std::string best_json;
+	bool best_is_prefix = false;
 	for (auto &[scope, json_str] : config_entries) {
 		if (scope == "default") {
 			continue;
 		}
-		if (url.rfind(scope, 0) == 0 && scope.length() > best_scope.length()) {
-			best_scope = scope;
-			best_json = json_str;
+		// Prefix match: url starts with scope (e.g. https://api.example.com/v1 matches https://api.example.com/v1/users)
+		if (url.rfind(scope, 0) == 0) {
+			if (!best_is_prefix || scope.length() > best_scope.length()) {
+				best_scope = scope;
+				best_json = json_str;
+				best_is_prefix = true;
+			}
+			continue;
+		}
+		// Domain-suffix match: scope's host is a suffix of url's host
+		// (e.g. scope https://deshaw.com matches url https://sub.deshaw.com/path)
+		if (!best_is_prefix) {
+			auto scope_host = ExtractHostFromUrl(scope);
+			auto url_host = ExtractHostFromUrl(url);
+			if (!scope_host.empty() && !url_host.empty()) {
+				bool matches = (url_host == scope_host) ||
+				    (url_host.length() > scope_host.length() &&
+				     url_host.compare(url_host.length() - scope_host.length(), scope_host.length(), scope_host) == 0 &&
+				     url_host[url_host.length() - scope_host.length() - 1] == '.');
+				if (matches && scope_host.length() > ExtractHostFromUrl(best_scope).length()) {
+					best_scope = scope;
+					best_json = json_str;
+				}
+			}
 		}
 	}
 

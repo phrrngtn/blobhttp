@@ -120,6 +120,47 @@ SELECT json_extract_string(http_config_get('https://api.example.com/'), '$.beare
 tok123
 
 # ---------------------------------------------------------------------------
+# Domain-suffix matching: scope applies to subdomains
+# ---------------------------------------------------------------------------
+
+# Set config for a base domain
+statement ok
+SET VARIABLE http_config = http_config_set(
+    'https://deshaw.com',
+    json_object('auth_type', 'negotiate')
+);
+
+# An expired bearer on a subdomain proves the domain-suffix match resolved the config
+statement ok
+SET VARIABLE http_config = http_config_set(
+    'https://deshaw.com',
+    json_object('auth_type', 'bearer', 'bearer_token', 'tok', 'bearer_token_expires_at', 1)
+);
+
+statement error
+SELECT r.response_status_code
+FROM (SELECT http_get('https://sub.deshaw.com/path') AS r);
+----
+Bearer token for sub.deshaw.com expired at
+
+# Prefix match takes priority over domain-suffix match
+statement ok
+SET VARIABLE http_config = http_config_set(
+    'https://sub.deshaw.com/',
+    json_object('auth_type', 'bearer', 'bearer_token', 'specific', 'bearer_token_expires_at', 2)
+);
+
+statement error
+SELECT r.response_status_code
+FROM (SELECT http_get('https://sub.deshaw.com/path') AS r);
+----
+Bearer token for sub.deshaw.com expired at
+
+# Clean up before next section
+statement ok
+SET VARIABLE http_config = MAP {};
+
+# ---------------------------------------------------------------------------
 # Bearer token expiry: expired token raises error
 # ---------------------------------------------------------------------------
 
