@@ -98,20 +98,33 @@ The pattern is:
 
 Today this can be done manually in SQL:
 
-```sql
--- Step 1: Get token (using negotiate_auth_header for the token endpoint)
-SELECT r.response_body
-FROM (SELECT http_get('https://auth.corp.com/token',
-    headers := MAP {'Authorization': negotiate_auth_header('https://auth.corp.com/token')}) AS r);
+```python
+# Python hosting application refreshes the token and merges it into config
+token, expires_at = get_vendor_token()  # your multi-hop auth chain
 
--- Step 2: Set the token in config
-SET VARIABLE http_config = MAP {
-    'https://api.corp.com': '{"auth_type": "bearer", "bearer_token": "<paste token>"}'
-};
+# Merge — preserves existing config for other scopes
+existing = con.execute("SELECT getvariable('http_config')").fetchone()[0] or {}
+existing['https://api.corp.com'] = json.dumps({
+    "auth_type": "bearer",
+    "bearer_token": token,
+    "bearer_token_expires_at": expires_at
+})
+con.execute("SET VARIABLE http_config = ?", [existing])
 ```
 
-But this is tedious and doesn't handle expiry. A better approach would be
-extension-level token caching:
+Or purely in SQL, using `map_concat` to merge without clobbering:
+
+```sql
+SET VARIABLE http_config = map_concat(
+    IFNULL(TRY_CAST(getvariable('http_config') AS MAP(VARCHAR, VARCHAR)), MAP {}),
+    MAP {
+        'https://api.corp.com': '{"auth_type": "bearer", "bearer_token": "eyJ...", "bearer_token_expires_at": 1741564800}'
+    }
+);
+```
+
+But this is tedious and doesn't handle expiry automatically. A better
+approach would be extension-level token caching:
 
 - A process-global token cache keyed by token endpoint URL
 - Each entry stores: token, expiry timestamp, the auth method used to obtain it
