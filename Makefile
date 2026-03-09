@@ -9,7 +9,7 @@ EXTENSION_NAME=http_enterprise
 USE_UNSTABLE_C_API=0
 
 # The DuckDB version to target
-TARGET_DUCKDB_VERSION=v1.4.3
+TARGET_DUCKDB_VERSION=v1.2.0
 
 # Use uv instead of configure/venv for all Python invocations
 PYTHON_VENV_BIN=uv run python
