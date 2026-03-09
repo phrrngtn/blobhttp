@@ -88,7 +88,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "duckdb", specifier = ">=1.4.3" },
-    { name = "duckdb-sqllogictest", git = "https://github.com/duckdb/duckdb-sqllogictest-python?rev=2ac8dbc012ddbd96a57dca37784fd8ee3c0eb021" },
+    { name = "duckdb-sqllogictest", git = "https://github.com/duckdb/duckdb-sqllogictest-python?rev=0a936de0669a6ab7c78c8d1fbd4f57b251bfaa55" },
     { name = "flask", specifier = ">=3.0" },
     { name = "pytest", specifier = ">=8.0" },
 ]
@@ -96,7 +96,7 @@ requires-dist = [
 [[package]]
 name = "duckdb-sqllogictest"
 version = "0.0.1"
-source = { git = "https://github.com/duckdb/duckdb-sqllogictest-python?rev=2ac8dbc012ddbd96a57dca37784fd8ee3c0eb021#2ac8dbc012ddbd96a57dca37784fd8ee3c0eb021" }
+source = { git = "https://github.com/duckdb/duckdb-sqllogictest-python?rev=0a936de0669a6ab7c78c8d1fbd4f57b251bfaa55#0a936de0669a6ab7c78c8d1fbd4f57b251bfaa55" }
 dependencies = [
     { name = "duckdb" },
     { name = "termcolor" },
