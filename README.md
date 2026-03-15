@@ -1,4 +1,4 @@
-# duckdb-http-enterprise
+# blobhttp
 
 > **Note on authorship:** The code and documentation in this repository were
 > generated entirely by Claude Opus 4.6 (Anthropic), under close human
@@ -8,11 +8,16 @@
 > shape, and overall direction were guided by the human; implementation was
 > performed by the model.
 
-A DuckDB extension providing HTTP client functions as composable SQL primitives
-with enterprise features: SPNEGO/Kerberos authentication, mutual TLS, scoped
+blobhttp is a member of the [BLOB extension family](https://github.com/phrrngtn/rule4/blob/main/BLOB_EXTENSIONS.md).
+It provides HTTP client functions as composable SQL primitives for both
+**DuckDB** and **SQLite**, with enterprise features: SPNEGO/Kerberos
+authentication, mutual TLS, Vault/OpenBao secret injection, scoped
 configuration, GCRA rate limiting, and parallel execution via libcurl's multi
-interface. Built on the [DuckDB C Extension API](https://github.com/duckdb/extension-template-c)
-for binary compatibility across DuckDB versions.
+interface.
+
+The DuckDB extension is built on the [DuckDB C Extension API](https://github.com/duckdb/extension-template-c)
+for binary compatibility across DuckDB versions. The SQLite extension follows
+the standard loadable extension pattern.
 
 Inspired by Alex Garcia's excellent [sqlite-http](https://github.com/asg017/sqlite-http)
 (`http0`) extension for SQLite, which demonstrated how natural and powerful
@@ -24,10 +29,10 @@ rather than as a transparent filesystem layer.
 The DuckDB community extensions repository includes
 [http_client](https://github.com/Query-farm/httpclient) by Query-farm, which
 provides basic `http_get`/`http_post`/`http_head` functions returning JSON.
-This extension (`http_enterprise`) is a separate, ground-up implementation
-targeting different use cases. Key differences:
+blobhttp is a separate, ground-up implementation targeting different use
+cases. Key differences:
 
-| | [http_client](https://github.com/Query-farm/httpclient) | http_enterprise |
+| | [http_client](https://github.com/Query-farm/httpclient) | blobhttp |
 |---|---|---|
 | HTTP methods | GET, POST, HEAD | GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS + generic `http_request()` |
 | Return type | JSON (access via `->>`) | Native STRUCT (access via `.field`) |
@@ -47,15 +52,34 @@ modification.
 
 ## Loading
 
+### DuckDB
+
 ```sql
-LOAD 'path/to/http_enterprise.duckdb_extension';
+LOAD 'path/to/bhttp.duckdb_extension';
 ```
 
 Or, if loading an unsigned extension:
 
 ```bash
-duckdb -unsigned -cmd "LOAD 'build/release/http_enterprise.duckdb_extension';"
+duckdb -unsigned -cmd "LOAD 'build/release/bhttp.duckdb_extension';"
 ```
+
+### SQLite
+
+```sql
+.load path/to/bhttp
+```
+
+SQLite functions are prefixed with `bhttp_` to avoid conflicts with other
+extensions. The DuckDB functions use unprefixed names (`http_get`, etc.) via
+SQL macros that wrap the underlying `_http_raw_request` C function.
+
+| DuckDB | SQLite | Notes |
+|---|---|---|
+| `http_get(url, ...)` | `bhttp_get(url, ...)` | Named params (DuckDB) vs positional (SQLite) |
+| `http_post(url, ...)` | `bhttp_post(url, ...)` | |
+| `http_request(method, url, ...)` | `bhttp_request(method, url, ...)` | Generic, all verbs |
+| Returns STRUCT | Returns JSON string | SQLite has no STRUCT type |
 
 ## HTTP Functions
 
@@ -695,7 +719,7 @@ Endpoints:
 # Terminal 2: reset and run 10 requests with 0.3s delay each
 curl -s http://localhost:8444/reset > /dev/null
 
-duckdb -unsigned -cmd "LOAD 'build/release/http_enterprise.duckdb_extension';" -c "
+duckdb -unsigned -cmd "LOAD 'build/release/bhttp.duckdb_extension';" -c "
 SELECT id,
        json_extract(http_request('GET',
            'http://localhost:8444/slow/' || id::VARCHAR || '?delay=0.3',
@@ -716,7 +740,7 @@ reports `peak_concurrent_connections: 10`.
 ```bash
 curl -s http://localhost:8444/reset > /dev/null
 
-duckdb -unsigned -cmd "LOAD 'build/release/http_enterprise.duckdb_extension';" -c "
+duckdb -unsigned -cmd "LOAD 'build/release/bhttp.duckdb_extension';" -c "
 SET VARIABLE http_config = MAP {
     'default': '{\"max_concurrent\": 3, \"rate_limit\": \"100/s\"}'
 };
@@ -762,7 +786,7 @@ print(f'Batches: {len(batches)} (sizes: {[len(b) for b in batches]})')
 #### Verify rate limiter diagnostics after testing
 
 ```bash
-duckdb -unsigned -cmd "LOAD 'build/release/http_enterprise.duckdb_extension';" -c "
+duckdb -unsigned -cmd "LOAD 'build/release/bhttp.duckdb_extension';" -c "
 -- Run some requests first
 SELECT count(*) FROM (
     SELECT http_request('GET', 'http://localhost:8444/fast', NULL, NULL, NULL)
@@ -786,7 +810,7 @@ A test server is included for end-to-end Negotiate authentication testing:
 python3 test/flask_negotiate_server.py
 
 # In another terminal
-duckdb -unsigned -cmd "LOAD 'build/release/http_enterprise.duckdb_extension';" -c "
+duckdb -unsigned -cmd "LOAD 'build/release/bhttp.duckdb_extension';" -c "
     -- Health check (no auth required)
     SELECT r.response_status_code
     FROM (SELECT http_get('https://localhost:8443/health') AS r);
