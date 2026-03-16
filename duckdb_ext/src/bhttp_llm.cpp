@@ -3,6 +3,7 @@
 #include "http_config.hpp"
 #include "rate_limiter.hpp"
 
+#include <chrono>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -18,9 +19,7 @@ DUCKDB_EXTENSION_EXTERN
 namespace blobhttp {
 
 // ---------------------------------------------------------------------------
-// Rate limiter access — mirrors bhttp_functions.cpp statics.
-// These are defined in bhttp_functions.cpp; we declare them here so the
-// LLM function participates in the same process-global rate limiting.
+// Rate limiter access
 // ---------------------------------------------------------------------------
 
 extern RateLimiterRegistry &GetRateLimiterRegistry();
@@ -29,12 +28,45 @@ extern void AcquireRateLimit(GCRARateLimiter *limiter);
 extern void RecordResponseStats(const cpr::Response &response, const std::string &host);
 
 // ---------------------------------------------------------------------------
+// LlmStats methods (declared in bhttp_llm.hpp)
+// ---------------------------------------------------------------------------
+
+void LlmStats::AccumulateUsage(const nlohmann::json &response, double elapsed) {
+	http_requests++;
+	elapsed_seconds += elapsed;
+
+	if (response.contains("usage")) {
+		auto &u = response["usage"];
+		prompt_tokens += u.value("prompt_tokens", 0);
+		completion_tokens += u.value("completion_tokens", 0);
+		total_tokens += u.value("total_tokens", 0);
+	}
+	if (response.contains("model")) {
+		model = response["model"].get<std::string>();
+	}
+}
+
+nlohmann::json LlmStats::ToJson() const {
+	return {
+	    {"http_requests", http_requests},
+	    {"continuations", continuations},
+	    {"retries", retries},
+	    {"prompt_tokens", prompt_tokens},
+	    {"completion_tokens", completion_tokens},
+	    {"total_tokens", total_tokens},
+	    {"elapsed_seconds", elapsed_seconds},
+	    {"model", model},
+	    {"finish_reason", finish_reason}
+	};
+}
+
+// ---------------------------------------------------------------------------
 // Core: LLM completion with continuation and optional schema validation
 // ---------------------------------------------------------------------------
 
 //! Execute a single POST to the chat completions endpoint.
-//! Returns the parsed JSON response.
-static nlohmann::json PostChatCompletion(
+//! Returns the parsed JSON response and the wall-clock elapsed time.
+static std::pair<nlohmann::json, double> PostChatCompletion(
     const std::string &url,
     const nlohmann::json &body,
     const HttpConfig &config,
@@ -47,12 +79,9 @@ static nlohmann::json PostChatCompletion(
 	cpr::Header cpr_headers;
 	cpr_headers["Content-Type"] = "application/json";
 
-	// Auth from config (bearer token, possibly from Vault)
 	if (config.auth_type == "bearer" && !config.bearer_token.empty()) {
 		cpr_headers["Authorization"] = "Bearer " + config.bearer_token;
 	}
-
-	// Extra headers (e.g. x-api-key, anthropic-version) override config
 	for (auto &[k, v] : extra_headers) {
 		cpr_headers[k] = v;
 	}
@@ -76,7 +105,6 @@ static nlohmann::json PostChatCompletion(
 	auto body_str = body.dump();
 	session->SetBody(cpr::Body{body_str});
 
-	// Rate limit
 	auto host = ExtractHostFromUrl(url);
 	AcquireRateLimit(GetGlobalLimiter(config.global_rate_limit_spec, config.global_burst));
 	AcquireRateLimit(GetRateLimiterRegistry().GetOrCreate(
@@ -91,24 +119,21 @@ static nlohmann::json PostChatCompletion(
 		    "): " + response.text.substr(0, 500));
 	}
 
-	return nlohmann::json::parse(response.text);
+	return {nlohmann::json::parse(response.text), response.elapsed};
 }
 
-//! Extract the assistant's text content from a chat completion response.
 static std::string ExtractContent(const nlohmann::json &response) {
 	auto &choice = response["choices"][0];
 	auto &message = choice["message"];
 	if (message.contains("content") && !message["content"].is_null()) {
 		return message["content"].get<std::string>();
 	}
-	// Tool call mode: extract from tool_calls[0].function.arguments
 	if (message.contains("tool_calls") && !message["tool_calls"].empty()) {
 		return message["tool_calls"][0]["function"]["arguments"].get<std::string>();
 	}
 	return "";
 }
 
-//! Extract the finish reason from a chat completion response.
 static std::string ExtractFinishReason(const nlohmann::json &response) {
 	auto &choice = response["choices"][0];
 	if (choice.contains("finish_reason") && !choice["finish_reason"].is_null()) {
@@ -117,12 +142,8 @@ static std::string ExtractFinishReason(const nlohmann::json &response) {
 	return "";
 }
 
-//! The main completion loop. Handles:
-//!   1. Continuation when finish_reason == "length" (max_tokens hit)
-//!   2. Schema validation + retry when output_schema is provided
-//!
-//! Returns the completed text (or validated JSON string).
-std::string LlmCompleteLoop(
+//! The main completion loop. Returns content + accumulated stats.
+LlmResult LlmCompleteLoop(
     const std::string &url,
     nlohmann::json body,
     const HttpConfig &config,
@@ -131,7 +152,9 @@ std::string LlmCompleteLoop(
     int max_continuations,
     int max_retries) {
 
-	// --- Phase 1: Schema setup (if provided) ---
+	LlmStats stats;
+
+	// --- Phase 1: Schema setup ---
 	bool use_schema = !output_schema_str.empty();
 	std::unique_ptr<jsoncons::jsonschema::json_schema<jsoncons::json>> compiled_schema;
 	nlohmann::json schema_json;
@@ -139,7 +162,6 @@ std::string LlmCompleteLoop(
 	if (use_schema) {
 		schema_json = nlohmann::json::parse(output_schema_str);
 
-		// Inject the schema as a forced tool call
 		nlohmann::json tool = {
 		    {"type", "function"},
 		    {"function", {
@@ -153,7 +175,6 @@ std::string LlmCompleteLoop(
 		    {"function", {{"name", "extract"}}}
 		};
 
-		// Compile the jsoncons schema for validation
 		auto jc_schema = jsoncons::json::parse(output_schema_str);
 		compiled_schema = std::make_unique<jsoncons::jsonschema::json_schema<jsoncons::json>>(
 		    jsoncons::jsonschema::make_json_schema(std::move(jc_schema)));
@@ -164,17 +185,20 @@ std::string LlmCompleteLoop(
 		std::string accumulated;
 
 		for (int cont = 0; cont < max_continuations; cont++) {
-			auto response = PostChatCompletion(url, req_body, config, extra_headers);
+			auto [response, elapsed] = PostChatCompletion(url, req_body, config, extra_headers);
+			stats.AccumulateUsage(response, elapsed);
+
 			auto fragment = ExtractContent(response);
 			auto finish_reason = ExtractFinishReason(response);
 
 			accumulated += fragment;
 
 			if (finish_reason != "length") {
+				stats.finish_reason = finish_reason;
 				return accumulated;
 			}
 
-			// Continuation: append partial response and ask to continue
+			stats.continuations++;
 			req_body["messages"].push_back({
 			    {"role", "assistant"},
 			    {"content", accumulated}
@@ -190,28 +214,27 @@ std::string LlmCompleteLoop(
 		    ") reached — response still incomplete");
 	};
 
-	// --- Phase 3: Validate + retry loop (if schema) ---
+	// --- Phase 3: Validate + retry loop ---
 	if (!use_schema) {
-		return do_complete(body);
+		LlmResult r;
+		r.content = do_complete(body);
+		r.stats = stats;
+		return r;
 	}
 
 	for (int attempt = 0; attempt < max_retries; attempt++) {
 		nlohmann::json attempt_body = body;
 		auto result = do_complete(attempt_body);
 
-		// Parse and validate against schema
 		try {
 			auto parsed = jsoncons::json::parse(result);
 
-			// Validate
 			jsoncons::json_decoder<jsoncons::json> decoder;
 			compiled_schema->validate(parsed, decoder);
 			auto output = decoder.get_result();
 
-			// Check if validation passed (empty object = no errors)
 			if (output.is_object() && output.contains("valid") &&
 			    !output["valid"].as<bool>()) {
-				// Format errors for the model
 				std::ostringstream oss;
 				oss << jsoncons::pretty_print(output);
 				std::string error_text = oss.str();
@@ -219,6 +242,7 @@ std::string LlmCompleteLoop(
 					error_text = error_text.substr(0, 2000) + "...";
 				}
 
+				stats.retries++;
 				body["messages"].push_back({
 				    {"role", "assistant"},
 				    {"content", result}
@@ -231,10 +255,13 @@ std::string LlmCompleteLoop(
 				continue;
 			}
 
-			return result;
+			LlmResult r;
+			r.content = result;
+			r.stats = stats;
+			return r;
 
 		} catch (const jsoncons::ser_error &e) {
-			// JSON parse failure — ask model to fix
+			stats.retries++;
 			body["messages"].push_back({
 			    {"role", "assistant"},
 			    {"content", result}
@@ -253,8 +280,7 @@ std::string LlmCompleteLoop(
 }
 
 // ---------------------------------------------------------------------------
-// DuckDB scalar function: _llm_complete_raw(url, body, headers_json,
-//     config_json, output_schema, max_continuations, max_retries) -> VARCHAR
+// DuckDB scalar function: _llm_complete_raw
 // ---------------------------------------------------------------------------
 
 static void LlmCompleteScalarFunc(duckdb_function_info info,
@@ -263,7 +289,6 @@ static void LlmCompleteScalarFunc(duckdb_function_info info,
 	idx_t input_size = duckdb_data_chunk_get_size(input);
 	if (input_size == 0) return;
 
-	// Helper to read a varchar, returning empty if null
 	auto read_varchar = [](duckdb_vector vec, idx_t row) -> std::string {
 		auto *validity = duckdb_vector_get_validity(vec);
 		if (validity && !(validity[row / 64] & (1ULL << (row % 64)))) {
@@ -307,7 +332,6 @@ static void LlmCompleteScalarFunc(duckdb_function_info info,
 		}
 
 		try {
-			// Parse config
 			std::vector<std::pair<std::string, std::string>> config_entries;
 			if (!config_json.empty()) {
 				auto cj = nlohmann::json::parse(config_json);
@@ -319,11 +343,9 @@ static void LlmCompleteScalarFunc(duckdb_function_info info,
 			}
 			auto config = ResolveConfig(url, config_entries);
 
-			// Resolve Vault secrets
 			std::vector<std::pair<std::string, std::string>> params;
 			ResolveVaultSecrets(config, params);
 
-			// Parse extra headers
 			std::vector<std::pair<std::string, std::string>> extra_headers;
 			if (!headers_json.empty()) {
 				auto hj = nlohmann::json::parse(headers_json);
@@ -334,13 +356,14 @@ static void LlmCompleteScalarFunc(duckdb_function_info info,
 				}
 			}
 
-			// Parse body
 			auto body = nlohmann::json::parse(body_str);
 
-			auto result = LlmCompleteLoop(
+			auto llm_result = LlmCompleteLoop(
 			    url, std::move(body), config, extra_headers,
 			    output_schema, max_continuations, max_retries);
 
+			// Return just the content for the low-level scalar
+			auto &result = llm_result.content;
 			duckdb_vector_assign_string_element_len(
 			    output, row, result.c_str(), result.length());
 

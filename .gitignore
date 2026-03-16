@@ -14,3 +14,4 @@ test/key.pem
 python/blobhttp/*.so
 python/blobhttp/*.pyd
 python/blobhttp/*.dylib
+build_sqlite/

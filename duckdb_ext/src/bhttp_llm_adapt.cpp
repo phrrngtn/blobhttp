@@ -1,4 +1,5 @@
 #include "duckdb_extension.h"
+#include "bhttp_llm.hpp"
 #include "bhttp_llm_adapt.hpp"
 #include "http_config.hpp"
 #include "rate_limiter.hpp"
@@ -17,15 +18,7 @@ DUCKDB_EXTENSION_EXTERN
 
 namespace blobhttp {
 
-// Forward declarations
-extern std::string LlmCompleteLoop(
-    const std::string &url,
-    nlohmann::json body,
-    const HttpConfig &config,
-    const std::vector<std::pair<std::string, std::string>> &extra_headers,
-    const std::string &output_schema_str,
-    int max_continuations,
-    int max_retries);
+// LlmResult and LlmCompleteLoop are declared in bhttp_llm.hpp
 
 // ---------------------------------------------------------------------------
 // _llm_adapt_raw(config_json) -> VARCHAR
@@ -124,23 +117,33 @@ static void LlmAdaptRawFunc(duckdb_function_info info,
 			    })}
 			};
 
-			auto raw_result = LlmCompleteLoop(
+			auto llm_result = LlmCompleteLoop(
 			    endpoint, std::move(body), config, extra_headers,
 			    output_schema, max_continuations, max_retries);
 
 			// Apply response_jmespath (jsoncons, not blobtemplates)
-			std::string final_result = raw_result;
+			std::string content_result = llm_result.content;
 			if (!response_jmespath.empty()) {
-				auto doc = jsoncons::json::parse(raw_result);
+				auto doc = jsoncons::json::parse(content_result);
 				auto jmes_result = jsoncons::jmespath::search(
 				    doc, response_jmespath);
 				std::ostringstream oss;
 				oss << jmes_result;
-				final_result = oss.str();
+				content_result = oss.str();
 			}
 
+			// Build result: {data: <content>, _meta: <stats>}
+			nlohmann::json result_obj;
+			try {
+				result_obj["data"] = nlohmann::json::parse(content_result);
+			} catch (...) {
+				result_obj["data"] = content_result;
+			}
+			result_obj["_meta"] = llm_result.stats.ToJson();
+
+			auto final_str = result_obj.dump();
 			duckdb_vector_assign_string_element_len(
-			    output, row, final_result.c_str(), final_result.length());
+			    output, row, final_str.c_str(), final_str.length());
 
 		} catch (const std::exception &e) {
 			duckdb_scalar_function_set_error(info, e.what());
