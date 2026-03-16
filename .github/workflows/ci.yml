@@ -68,3 +68,30 @@ jobs:
         with:
           name: bhttp-${{ matrix.os }}
           path: build/release/bhttp.duckdb_extension
+
+  build-sqlite:
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build SQLite extension
+        run: |
+          cmake -DBUILD_SQLITE_EXTENSION=ON -DBUILD_DUCKDB_EXTENSION=OFF \
+                -DBUILD_PYTHON_BINDINGS=OFF -S . -B build_sqlite
+          cmake --build build_sqlite --config Release --target bhttp_sqlite
+
+      - name: Upload SQLite extension artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bhttp-sqlite-${{ matrix.os }}
+          path: build_sqlite/sqlite/bhttp.*
