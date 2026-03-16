@@ -556,6 +556,313 @@ SELECT * FROM http_rate_limit_stats();
 -- localhost  | 15 requests | 1955 bytes | paced=0
 ```
 
+## LLM Completion
+
+blobhttp provides two levels of LLM integration: a low-level scalar function
+(`llm_complete`) for direct chat completion calls, and a data-driven adapter
+system (`llm_adapt`) for building domain-specific functions backed by templates
+and schemas stored in a table.
+
+Both target the OpenAI `/v1/chat/completions` protocol. A local gateway like
+[Bifrost](https://github.com/maximhq/bifrost) translates this to 20+ LLM
+providers (Anthropic, Google, Mistral, etc.), so the SQL never contains
+vendor-specific logic.
+
+### Architecture
+
+```
+Domain macro                         llm_adapter table
+physical_properties(                 ┌──────────────────────────┐
+  ['water','ethanol'],               │ prompt_template (inja)   │
+  ['boiling point']                  │ output_schema (JSON)     │
+)                                    │ response_jmespath        │
+  │                                  └────────────┬─────────────┘
+  │ maps typed args to JSON                       │
+  ▼                                               │
+llm_adapt('physical_properties', params)          │
+  │                                               │
+  │ looks up adapter row ◄────────────────────────┘
+  │ renders prompt via template_render() (inja)
+  │ merges session defaults (endpoint, model, http_config)
+  │ merges caller overrides
+  ▼
+_llm_adapt_raw(config_json)
+  │
+  │ C++ scalar function:
+  │   1. POST to gateway (via cpr, rate-limited)
+  │   2. Continuation loop (finish_reason == "length")
+  │   3. Schema validation (jsoncons Draft 2020-12)
+  │   4. Retry with error feedback on validation failure
+  │   5. Response reshaping (JMESPath via jsoncons)
+  ▼
+JSON result (list-of-dicts)
+```
+
+Three layers, each with a single responsibility:
+
+| Layer | What | Where logic lives |
+|---|---|---|
+| Domain macro | Typed interface for callers | One-line SQL macro |
+| `llm_adapt` | Adapter lookup, template rendering, config merge | SQL table macro + `template_render()` from blobtemplates |
+| `_llm_adapt_raw` | HTTP, continuation, validation, reshaping | C++ scalar function |
+
+### Low-level: `llm_complete()`
+
+Direct chat completion call with optional schema validation. Use this when
+you don't need the adapter system — one-off queries, testing, or building
+custom pipelines.
+
+```sql
+SELECT llm_complete(
+    'http://localhost:8080/v1/chat/completions',
+    body := json_object(
+        'model', 'anthropic/claude-haiku-4-5-20251001',
+        'max_tokens', 256,
+        'messages', json_array(
+            json_object('role', 'user',
+                'content', 'What is the capital of France?')
+        )
+    )
+) AS response;
+-- Returns: 'The capital of France is Paris.'
+```
+
+With schema validation:
+
+```sql
+SELECT llm_complete(
+    'http://localhost:8080/v1/chat/completions',
+    body := json_object(
+        'model', 'anthropic/claude-haiku-4-5-20251001',
+        'max_tokens', 256,
+        'messages', json_array(
+            json_object('role', 'user',
+                'content', 'Greet me warmly in French.')
+        )
+    ),
+    output_schema := '{
+        "type": "object",
+        "required": ["greeting", "language", "formality"],
+        "properties": {
+            "greeting":  {"type": "string"},
+            "language":  {"type": "string", "enum": ["French", "English", "Spanish"]},
+            "formality": {"type": "string", "enum": ["formal", "informal"]}
+        },
+        "additionalProperties": false
+    }'
+) AS response;
+-- Returns: {"formality":"formal","greeting":"Bonjour!...","language":"French"}
+```
+
+The top-level schema must be `"type": "object"` (required by the tool call
+protocol). To return arrays, wrap them in an object property.
+
+#### `llm_complete` parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `url` | VARCHAR | (required) | Chat completions endpoint URL |
+| `body` | VARCHAR | (required) | Request body JSON (model, messages, max_tokens, etc.) |
+| `headers` | MAP(VARCHAR, VARCHAR) | NULL | Extra headers |
+| `output_schema` | VARCHAR | NULL | JSON Schema for output validation |
+| `max_continuations` | INTEGER | 10 | Max continuation round-trips on `finish_reason == "length"` |
+| `max_retries` | INTEGER | 3 | Max retries on schema validation failure |
+
+### Data-driven adapters: `llm_adapt()` and the `llm_adapter` table
+
+For repeatable, domain-specific functions, store the prompt template, output
+schema, and response reshaping expression in the `llm_adapter` table. The
+`llm_adapt` table macro does the lookup, renders the template, and calls
+`_llm_adapt_raw`. Domain macros wrap `llm_adapt` with a typed interface.
+
+#### The `llm_adapter` table
+
+```sql
+CREATE TABLE llm_adapter (
+    name              VARCHAR PRIMARY KEY,
+    prompt_template   VARCHAR NOT NULL,   -- Inja/Jinja2 template
+    output_schema     VARCHAR,            -- JSON Schema for validation
+    response_jmespath VARCHAR,            -- JMESPath to reshape the result
+    max_tokens        INTEGER DEFAULT 4096
+);
+```
+
+| Column | Role | Language |
+|---|---|---|
+| `prompt_template` | Compose the prompt from caller's parameters | [Inja](https://github.com/pantor/inja) (Jinja2-style) |
+| `output_schema` | Constrain the model's output shape | JSON Schema (Draft 2020-12) |
+| `response_jmespath` | Extract/reshape the validated JSON | JMESPath |
+
+Inja renders text from structured data (prompt construction). JMESPath
+selects and reshapes structured data (response extraction). Each tool is
+used where it fits.
+
+#### Example: physical properties lookup
+
+Register the adapter:
+
+```sql
+INSERT INTO llm_adapter VALUES (
+    'physical_properties',
+    'For each of these substances: {{ join(substances, ", ") }}. '
+    'Return the following measurements in SI units: '
+    '{{ join(metrics, ", ") }}. '
+    'Return one row per substance-metric combination.',
+    '{
+        "type": "object",
+        "required": ["measurements"],
+        "properties": {
+            "measurements": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["substance", "metric", "unit_of_measure", "value"],
+                    "properties": {
+                        "substance":       {"type": "string"},
+                        "metric":          {"type": "string"},
+                        "unit_of_measure": {"type": "string"},
+                        "value":           {"type": "number"}
+                    },
+                    "additionalProperties": false
+                }
+            }
+        },
+        "additionalProperties": false
+    }',
+    'measurements',
+    4096
+);
+```
+
+Define the domain macro:
+
+```sql
+CREATE OR REPLACE MACRO physical_properties(substances, metrics) AS TABLE (
+    SELECT result FROM llm_adapt('physical_properties',
+        json_object('substances', substances, 'metrics', metrics))
+);
+```
+
+Call it:
+
+```sql
+SELECT * FROM physical_properties(
+    ['water', 'ethanol', 'mercury'],
+    ['boiling point', 'melting point', 'density at 25°C']
+);
+```
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│ result (JSON list-of-dicts)                                              │
+├──────────────────────────────────────────────────────────────────────────┤
+│ [{"substance":"water","metric":"boiling point","value":373.15,"unit_of_ │
+│ measure":"K"},{"substance":"water","metric":"melting point","value":273. │
+│ 15,"unit_of_measure":"K"}, ...]                                         │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+3 substances x 3 metrics = 9 measurements, one HTTP call, JSON list-of-dicts
+back. The caller can shred it into rows with DuckDB's `UNNEST`/`from_json`
+or pass the JSON blob directly to another function.
+
+#### Adding a new adapter
+
+1. INSERT a row into `llm_adapter` with the template, schema, and JMESPath
+2. Write a one-line domain macro that maps typed arguments to JSON
+
+The C++ function, gateway, model, rate limiting — none of that changes.
+
+#### Override anything per-call
+
+The `params` JSON passed to `llm_adapt` is merged on top of the adapter row,
+so any well-known key can be overridden:
+
+```sql
+-- Use a different model for this call
+SELECT * FROM llm_adapt('physical_properties',
+    json_object(
+        'substances', ['water'],
+        'metrics', ['boiling point'],
+        'model', 'anthropic/claude-sonnet-4-20250514'
+    ));
+
+-- Override max_tokens
+SELECT * FROM llm_adapt('physical_properties',
+    json_object(
+        'substances', ['water'],
+        'metrics', ['boiling point'],
+        'max_tokens', 8192
+    ));
+```
+
+### Schema validation
+
+1. The `output_schema` is wrapped as a tool definition with `tool_choice: forced`,
+   so the model must return JSON matching the schema
+2. The response is extracted from `choices[0].message.tool_calls[0].function.arguments`
+3. jsoncons validates the JSON against the schema (JSON Schema Draft 2020-12)
+4. If valid: return the JSON string
+5. If invalid: append the assistant's response and validation errors as messages,
+   retry from step 1
+
+The validation error sent back to the model includes `instanceLocation`
+(JSON Pointer to the offending field) and a human-readable error message.
+The model reads these and self-corrects.
+
+### Session configuration
+
+Infrastructure defaults are read from DuckDB session variables:
+
+| Variable | Default | Description |
+|---|---|---|
+| `llm_endpoint` | `http://localhost:8080/v1/chat/completions` | Chat completions URL |
+| `llm_model` | `anthropic/claude-haiku-4-5-20251001` | Default model |
+| `http_config` | `MAP {}` | Auth, rate limiting, Vault config (same as for `http_get` etc.) |
+
+```sql
+SET VARIABLE llm_endpoint = 'http://localhost:8080/v1/chat/completions';
+SET VARIABLE llm_model = 'anthropic/claude-sonnet-4-20250514';
+SET VARIABLE http_config = MAP {
+    'http://localhost:8080/': '{"rate_limit": "5/s"}'
+};
+```
+
+### Gateway setup (Bifrost)
+
+[Bifrost](https://github.com/maximhq/bifrost) provides a single
+OpenAI-compatible endpoint that translates to 20+ LLM providers. Run it
+locally:
+
+```bash
+docker run -d --name bifrost -p 8080:8080 maximhq/bifrost
+```
+
+Add a provider (key from Vault/OpenBao):
+
+```bash
+API_KEY=$(bao kv get -field=api_key secret/blobapi/anthropic)
+curl -X POST http://localhost:8080/api/providers \
+  -H 'Content-Type: application/json' \
+  -d "{\"name\": \"anthropic\", \"provider\": \"anthropic\",
+       \"keys\": [{\"name\": \"default\", \"value\": \"$API_KEY\",
+                   \"enabled\": true, \"weight\": 1}]}"
+```
+
+Model names use `provider/model` format: `anthropic/claude-haiku-4-5-20251001`,
+`openai/gpt-4o`, etc.
+
+### Dependencies
+
+The LLM functions add two dependencies:
+
+- [jsoncons](https://github.com/danielaparker/jsoncons) v1.1.0 (header-only) —
+  JSON Schema validation and JMESPath for response reshaping. Same library and
+  version used by blobtemplates.
+- [blobtemplates](../blobtemplates) extension (runtime) — provides
+  `template_render()` (Inja/Jinja2) for prompt construction. Must be loaded
+  alongside blobhttp when using `llm_adapt`.
+
 ## Negotiate (SPNEGO/Kerberos) Authentication
 
 ### `negotiate_auth_header(url)`

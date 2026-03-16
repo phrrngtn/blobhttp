@@ -18,6 +18,14 @@ FetchContent_Declare(nlohmann_json
 set(JSON_BuildTests OFF CACHE INTERNAL "")
 FetchContent_MakeAvailable(nlohmann_json)
 
+# ── jsoncons (header-only: JMESPath, JSON Schema validation) ─────
+FetchContent_Declare(jsoncons
+  GIT_REPOSITORY https://github.com/danielaparker/jsoncons.git
+  GIT_TAG        v1.1.0
+  GIT_SHALLOW    TRUE)
+set(JSONCONS_BUILD_TESTS OFF CACHE INTERNAL "")
+FetchContent_MakeAvailable(jsoncons)
+
 # ── cpr — C++ Requests: Curl for People ─────────────────────────────
 FetchContent_Declare(cpr
   GIT_REPOSITORY https://github.com/libcpr/cpr.git
@@ -47,7 +55,7 @@ endif()
 # ── Sources shared by all targets ────────────────────────────────────
 set(BHTTP_SOURCES src/negotiate_auth.cpp)
 set(BHTTP_INCLUDES include)
-set(BHTTP_LIBS nlohmann_json::nlohmann_json cpr::cpr)
+set(BHTTP_LIBS nlohmann_json::nlohmann_json cpr::cpr jsoncons)
 
 # Hide symbols by default
 set(CMAKE_CXX_VISIBILITY_PRESET hidden)
@@ -116,6 +124,8 @@ if(BUILD_DUCKDB_EXTENSION)
   set(DUCKDB_EXTENSION_SOURCES
     duckdb_ext/src/bhttp_ext.cpp
     duckdb_ext/src/bhttp_functions.cpp
+    duckdb_ext/src/bhttp_llm.cpp
+    duckdb_ext/src/bhttp_llm_adapt.cpp
     ${BHTTP_SOURCES}
     ${SQL_RESOURCES_HEADER})
 

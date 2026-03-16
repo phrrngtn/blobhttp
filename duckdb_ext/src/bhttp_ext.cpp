@@ -1,5 +1,7 @@
 #include "duckdb_extension.h"
 #include "bhttp_ext.hpp"
+#include "bhttp_llm.hpp"
+#include "bhttp_llm_adapt.hpp"
 #include "negotiate_auth.hpp"
 
 #include <cstring>
@@ -105,5 +107,7 @@ DUCKDB_EXTENSION_ENTRYPOINT(duckdb_connection connection, duckdb_extension_info 
 	RegisterScalarVarcharFunction(connection, "negotiate_auth_header", NegotiateAuthTokenFunc);
 	RegisterScalarVarcharFunction(connection, "negotiate_auth_header_json", NegotiateAuthTokenJsonFunc);
 	blobhttp::RegisterHttpFunctions(connection);
+	blobhttp::RegisterLlmFunctions(connection);
+	blobhttp::RegisterLlmAdaptFunction(connection);
 	return true;
 }

@@ -30,7 +30,7 @@ static LRUPool<std::string, cpr::Session> &GetSessionPool() {
 	return pool;
 }
 
-static RateLimiterRegistry &GetRateLimiterRegistry() {
+RateLimiterRegistry &GetRateLimiterRegistry() {
 	static RateLimiterRegistry registry(200);
 	return registry;
 }
@@ -42,7 +42,7 @@ static std::unique_ptr<GCRARateLimiter> g_global_limiter;
 static std::string g_global_limiter_spec;
 
 //! Get or (re)create the global rate limiter. Returns nullptr if no global limit is configured.
-static GCRARateLimiter *GetGlobalLimiter(const std::string &spec, double burst) {
+GCRARateLimiter *GetGlobalLimiter(const std::string &spec, double burst) {
 	if (spec.empty()) {
 		return nullptr;
 	}
@@ -308,7 +308,7 @@ static HttpResult ResponseToResult(const cpr::Response &response, const HttpBind
 
 //! Acquire a rate limit token from the given limiter, sleeping if necessary.
 //! Records pacing stats on the limiter.
-static void AcquireRateLimit(GCRARateLimiter *limiter) {
+void AcquireRateLimit(GCRARateLimiter *limiter) {
 	if (!limiter) return;
 	int max_retries = 50;
 	bool was_paced = false;
@@ -328,7 +328,7 @@ static void AcquireRateLimit(GCRARateLimiter *limiter) {
 }
 
 //! Record response facts and handle 429 feedback.
-static void RecordResponseStats(const cpr::Response &response, const std::string &host) {
+void RecordResponseStats(const cpr::Response &response, const std::string &host) {
 	auto *limiter = GetRateLimiterRegistry().GetOrCreate(host);
 	if (!limiter) return;
 
@@ -827,6 +827,8 @@ void RegisterHttpMacros(duckdb_connection connection) {
 		const_cast<std::vector<std::string> *>(&sql::http_config),
 		const_cast<std::vector<std::string> *>(&sql::http_verbs),
 		const_cast<std::vector<std::string> *>(&sql::http_config_helpers),
+		const_cast<std::vector<std::string> *>(&sql::llm_complete),
+		const_cast<std::vector<std::string> *>(&sql::llm_adapt),
 	};
 	for (auto *group : macro_groups) {
 		for (auto &stmt : *group) {
