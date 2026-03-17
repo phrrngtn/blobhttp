@@ -343,6 +343,10 @@ SET VARIABLE bh_http_config = bh_http_config_remove('https://api.vendor.com/');
 
 ### Vault / OpenBao integration
 
+> **Setup guide**: See [docs/dev-setup.md](docs/dev-setup.md) for instructions
+> on installing and configuring OpenBao for local development, including writing
+> secrets and configuring `bh_http_config` scopes.
+
 API keys can be fetched automatically from [HashiCorp Vault](https://www.vaultproject.io/)
 or [OpenBao](https://openbao.org) (open-source fork, same API). When a scope
 has a `vault_path`, blobhttp fetches the secret before making the request and
@@ -377,6 +381,23 @@ Secrets are cached in-process for 5 minutes to avoid repeated vault calls.
 The vault fetch itself is a bare HTTP GET with the token header — it does not
 go through blobhttp's config resolution, rate limiting, or proxy settings.
 Works with both Vault and OpenBao (identical HTTP API).
+
+### Proxy support / mitmproxy
+
+Any HTTP forward proxy can be configured per scope via the `proxy` field:
+
+```sql
+SET VARIABLE bh_http_config = bh_http_config_set(
+    'https://api.example.com/',
+    json_object('proxy', 'http://localhost:8443'));
+```
+
+[mitmproxy](https://mitmproxy.org) is recommended for development — it
+provides an interactive UI for inspecting requests, viewing Vault-injected
+credentials, and replaying traffic without burning API quota.
+
+> **Setup guide**: See [docs/dev-setup.md](docs/dev-setup.md) for mitmproxy
+> installation, TLS configuration, and recording/replay workflows.
 
 ### Mutual TLS (mTLS)
 
