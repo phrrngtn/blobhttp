@@ -482,7 +482,7 @@ static void bhttp_rate_limit_stats_func(sqlite3_context *ctx, int argc, sqlite3_
  * bh_http_adapt(adapter_name, params_json) -> JSON TEXT
  *
  * Looks up adapter from llm_adapter table, renders prompt via
- * template_render() (blobtemplates must be loaded), calls the LLM
+ * bt_render() (blobtemplates must be loaded), calls the LLM
  * with schema validation and continuation, applies response JMESPath.
  * Returns {"data": ..., "_meta": {...}}.
  * ══════════════════════════════════════════════════════════════════════ */
@@ -617,16 +617,16 @@ static void bhttp_adapt_func(sqlite3_context *ctx, int argc, sqlite3_value **arg
 		int max_continuations = parse_int("max_continuations", 10);
 		int max_retries = parse_int("max_retries", 3);
 
-		// Render prompt via template_render() (blobtemplates SQLite function)
+		// Render prompt via bt_render() (blobtemplates SQLite function)
 		std::string prompt_template = cfg.value("prompt_template", "");
 		std::string prompt_text;
 		if (!prompt_template.empty()) {
-			std::string sql = "SELECT template_render('" +
+			std::string sql = "SELECT bt_render('" +
 			    SqliteEscapeSql(prompt_template) + "', '" +
 			    SqliteEscapeSql(std::string(params_str)) + "')";
 			prompt_text = SqliteQueryScalar(db, sql);
 			if (prompt_text.empty()) {
-				sqlite3_result_error(ctx, "template_render failed — is blobtemplates loaded?", -1);
+				sqlite3_result_error(ctx, "bt_render failed — is blobtemplates loaded?", -1);
 				return;
 			}
 		} else {

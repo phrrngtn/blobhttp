@@ -1,12 +1,12 @@
 -- llm_adapt: table-driven adapter for LLM-backed functions.
 --
 -- Looks up an adapter by name from the llm_adapter table, renders the
--- prompt template via template_render() (inja/Jinja2, from blobtemplates),
+-- prompt template via bt_render() (inja/Jinja2, from blobtemplates),
 -- merges caller params + session defaults, and passes the resolved config
 -- to _llm_adapt_raw() which handles the LLM call, schema validation,
 -- and response JMESPath reshaping.
 --
--- Requires: bhttp extension (this file), blobtemplates extension (template_render).
+-- Requires: bhttp extension (this file), blobtemplates extension (bt_render).
 --
 -- The llm_adapter table must exist with columns:
 --   name, prompt_template, output_schema, response_jmespath, max_tokens
@@ -25,7 +25,7 @@ CREATE OR REPLACE MACRO llm_adapt(adapter_name, params) AS TABLE (
     ),
     RENDERED AS (
         SELECT
-            template_render(prompt_template, params) AS prompt_text,
+            bt_render(prompt_template, params) AS prompt_text,
             output_schema,
             response_jmespath,
             max_tokens_str

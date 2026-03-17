@@ -587,7 +587,7 @@ physical_properties(                 ┌─────────────�
 llm_adapt('physical_properties', params)          │
   │                                               │
   │ looks up adapter row ◄────────────────────────┘
-  │ renders prompt via template_render() (inja)
+  │ renders prompt via bt_render() (inja)
   │ merges session defaults (endpoint, model, bh_http_config)
   │ merges caller overrides
   ▼
@@ -608,7 +608,7 @@ Three layers, each with a single responsibility:
 | Layer | What | Where logic lives |
 |---|---|---|
 | Domain macro | Typed interface for callers | One-line SQL macro |
-| `llm_adapt` | Adapter lookup, template rendering, config merge | SQL table macro + `template_render()` from blobtemplates |
+| `llm_adapt` | Adapter lookup, template rendering, config merge | SQL table macro + `bt_render()` from blobtemplates |
 | `_llm_adapt_raw` | HTTP, continuation, validation, reshaping | C++ scalar function |
 
 Two template/reshaping languages, each used where it fits:
@@ -841,7 +841,7 @@ Model names use `provider/model` format: `anthropic/claude-haiku-4-5-20251001`,
 - [jsoncons](https://github.com/danielaparker/jsoncons) v1.1.0 (header-only) —
   JSON Schema validation and JMESPath for response reshaping.
 - [blobtemplates](../blobtemplates) extension (runtime) — provides
-  `template_render()` (Inja/Jinja2) for prompt construction. Must be loaded
+  `bt_render()` (Inja/Jinja2) for prompt construction. Must be loaded
   alongside blobhttp when using `llm_adapt`.
 
 ## Negotiate (SPNEGO/Kerberos) Authentication

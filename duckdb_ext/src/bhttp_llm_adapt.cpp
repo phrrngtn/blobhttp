@@ -27,7 +27,7 @@ namespace blobhttp {
 //
 //   Well-known keys:
 //     prompt_text        (required) Rendered prompt — already filled by
-//                        template_render() in the SQL macro layer.
+//                        bt_render() in the SQL macro layer.
 //     output_schema      (optional) JSON Schema for tool-call validation.
 //     response_jmespath  (optional) JMESPath to reshape the LLM output.
 //     endpoint           Chat completions URL.
@@ -38,7 +38,7 @@ namespace blobhttp {
 //     http_config        Object of scope->config entries for auth/rate-limiting.
 //
 // Everything else in the blob is ignored by this function but was available
-// to the template_render() call that produced prompt_text.
+// to the bt_render() call that produced prompt_text.
 //
 // This function never touches the database.
 // ---------------------------------------------------------------------------
@@ -66,7 +66,7 @@ static void LlmAdaptRawFunc(duckdb_function_info info,
 		try {
 			auto cfg = nlohmann::json::parse(config_str);
 
-			// Read prompt_text (required — rendered upstream by template_render)
+			// Read prompt_text (required — rendered upstream by bt_render)
 			std::string prompt_text = cfg.value("prompt_text", "");
 			if (prompt_text.empty()) {
 				throw std::runtime_error("prompt_text is required in config");
