@@ -9,21 +9,21 @@ The public API is:
 
 | Function | Kind | Purpose |
 |----------|------|---------|
-| `http_get`, `http_head`, `http_options`, `http_delete` | Scalar macro (idempotent) | Per-verb GET/HEAD/OPTIONS/DELETE |
-| `http_put` | Scalar macro (idempotent) | PUT with body |
-| `http_post`, `http_patch` | Scalar macro (volatile) | POST/PATCH — every call fires |
-| `http_request(method, url, ...)` | Scalar macro (volatile) | Generic method variant |
-| `http_request_json(method, url, ...)` | Scalar macro (volatile) | JSON variant via `to_json()` |
-| `negotiate_auth_header(url)` | Scalar | SPNEGO token generation |
-| `negotiate_auth_header_json(url)` | Scalar | SPNEGO token + debug metadata |
-| `http_rate_limit_stats()` | Table | Rate limiter and request diagnostics |
+| `bh_http_get`, `bh_http_head`, `bh_http_options`, `bh_http_delete` | Scalar macro (idempotent) | Per-verb GET/HEAD/OPTIONS/DELETE |
+| `bh_http_put` | Scalar macro (idempotent) | PUT with body |
+| `bh_http_post`, `bh_http_patch` | Scalar macro (volatile) | POST/PATCH — every call fires |
+| `bh_http_request(method, url, ...)` | Scalar macro (volatile) | Generic method variant |
+| `bh_http_request_json(method, url, ...)` | Scalar macro (volatile) | JSON variant via `to_json()` |
+| `bh_negotiate_auth_header(url)` | Scalar | SPNEGO token generation |
+| `bh_negotiate_auth_header_json(url)` | Scalar | SPNEGO token + debug metadata |
+| `bh_http_rate_limit_stats()` | Table | Rate limiter and request diagnostics |
 
-Plus two internal C functions (`_http_raw_request`, `_http_raw_request_volatile`)
-and one helper macro (`_http_config`) that are not intended for direct use.
+Plus two internal C functions (`_bh_http_raw_request`, `_bh_http_raw_request_volatile`)
+and one helper macro (`_bh_http_config`) that are not intended for direct use.
 
 All scalar functions return a STRUCT with the same fields (request_url,
 response_status_code, response_body, response_headers, etc.). Access fields
-via the CTE/subquery pattern: `SELECT r.field FROM (SELECT http_get(url) AS r)`.
+via the CTE/subquery pattern: `SELECT r.field FROM (SELECT bh_http_get(url) AS r)`.
 
 The Negotiate helpers exist because SPNEGO token generation can't be folded
 into a config flag without a pre-flight step.
@@ -46,7 +46,7 @@ Named parameters with defaults eliminate the need for trailing NULLs.
 | Bandwidth governance | Infrastructure | Proxy (`delay_pools`, QoS) |
 | Concurrency control | Extension | `max_concurrent` + `MultiPerform` |
 | Authentication | Extension + OS | Config-driven; Negotiate via GSS-API/SSPI |
-| Observability | Extension | `http_rate_limit_stats()` with raw counters |
+| Observability | Extension | `bh_http_rate_limit_stats()` with raw counters |
 
 ### Assessment
 
@@ -67,7 +67,7 @@ now supports this.
 ### Dead-column elimination
 
 DuckDB's optimizer will skip evaluating a scalar function if its result is not
-used. `SELECT count(*) FROM (SELECT http_request(...))` fires zero HTTP
+used. `SELECT count(*) FROM (SELECT bh_http_request(...))` fires zero HTTP
 requests because `count(*)` only needs the row count, not the column value.
 
 This is correct optimizer behavior — scalar functions should not have side
@@ -80,11 +80,11 @@ result to force evaluation:
 
 ```sql
 -- Wrong: fires 0 requests
-SELECT count(*) FROM (SELECT http_request('GET', url) FROM urls);
+SELECT count(*) FROM (SELECT bh_http_request('GET', url) FROM urls);
 
 -- Right: forces evaluation
 SELECT count(*) FROM (
-    SELECT json_extract(http_request('GET', url), '$.response_status_code') AS s
+    SELECT json_extract(bh_http_request('GET', url), '$.response_status_code') AS s
     FROM urls
 );
 ```
@@ -122,7 +122,7 @@ partial results with errors mixed in.
 
 ### No response size limit
 
-There is no way to cap the size of a response body. A `SELECT http_request(
+There is no way to cap the size of a response body. A `SELECT bh_http_request(
 'GET', url)` against an endpoint that returns a 1GB file will attempt to load
 the entire body into a VARCHAR.
 
@@ -147,7 +147,7 @@ some tests and is not yet run in CI.
   is ever added, the macros become optional sugar.
 
 - **STRUCT return type for the scalar function.** The primary functions
-  return a typed STRUCT with native MAP headers; `http_request_json` is
+  return a typed STRUCT with native MAP headers; `bh_http_request_json` is
   available as a JSON variant for callers that prefer a single string.
 
 - **Per-host rate limiting by default.** 20 req/s is conservative enough

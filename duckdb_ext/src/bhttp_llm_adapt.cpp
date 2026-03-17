@@ -21,7 +21,7 @@ namespace blobhttp {
 // LlmResult and LlmCompleteLoop are declared in bhttp_llm.hpp
 
 // ---------------------------------------------------------------------------
-// _llm_adapt_raw(config_json) -> VARCHAR
+// _llm_adapt_raw(config_json) -> VARCHAR (kept unprefixed — llm_* names are independent)
 //
 // Single-argument volatile scalar. Receives a fully-resolved JSON blob:
 //

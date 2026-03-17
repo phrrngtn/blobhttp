@@ -26,8 +26,8 @@ just one authentication method among several.
 
 The result provides:
 
-- Table functions (`http_get`, `http_post`, etc.) for interactive use
-- A scalar function (`http_request`) for data-driven use in JOINs and
+- Table functions (`bh_http_get`, `bh_http_post`, etc.) for interactive use
+- A scalar function (`bh_http_request`) for data-driven use in JOINs and
   expressions
 - Per-host rate limiting (GCRA algorithm) applied transparently
 - A scoped configuration system using DuckDB's `SET VARIABLE` mechanism
@@ -79,7 +79,7 @@ surfaced some practical constraints.
 **Configuration is the hard problem.** The C API does not expose the caller's
 connection context to function implementations. Extensions cannot read
 variables or secrets set by the user. We worked around this by implementing
-user-facing functions as SQL macros that read `getvariable('http_config')` in
+user-facing functions as SQL macros that read `getvariable('bh_http_config')` in
 the caller's context and pass the resolved configuration to underlying C
 functions as explicit parameters. This works well in practice, but it is a
 workaround.

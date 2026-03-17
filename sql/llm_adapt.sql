@@ -45,7 +45,7 @@ CREATE OR REPLACE MACRO llm_adapt(adapter_name, params) AS TABLE (
                     TRY_CAST(getvariable('llm_model') AS VARCHAR),
                     'anthropic/claude-haiku-4-5-20251001'),
                 'http_config',        CAST(IFNULL(
-                    TRY_CAST(getvariable('http_config') AS MAP(VARCHAR, VARCHAR)),
+                    TRY_CAST(getvariable('bh_http_config') AS MAP(VARCHAR, VARCHAR)),
                     MAP {}) AS JSON)::VARCHAR::JSON
             ),
             params::JSON

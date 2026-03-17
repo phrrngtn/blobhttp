@@ -44,7 +44,7 @@ def test_parallel_execution(con):
     """
     con.execute(
         f"""SELECT r.response_status_code FROM (
-            SELECT http_get('{SERVER}/slow/' || id::VARCHAR || '?delay=0.2') AS r
+            SELECT bh_http_get('{SERVER}/slow/' || id::VARCHAR || '?delay=0.2') AS r
             FROM range(5) AS t(id))"""
     ).fetchall()
     stats = json.loads(urllib.request.urlopen(f"{SERVER}/stats").read())

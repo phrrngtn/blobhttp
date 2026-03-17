@@ -58,7 +58,7 @@ class TestRateLimiterPacing:
         """Configure 5/s rate limit, fire 10 requests sequentially
         (max_concurrent=1), and verify inter-request gaps ~200ms."""
         con.execute(f"""
-            SET VARIABLE http_config = http_config_set(
+            SET VARIABLE bh_http_config = bh_http_config_set(
                 'default',
                 json_object(
                     'rate_limit', '5/s',
@@ -70,7 +70,7 @@ class TestRateLimiterPacing:
 
         con.execute(f"""
             SELECT r.response_status_code FROM (
-                SELECT http_get('{TARGET_SERVER}/req/' || id::VARCHAR) AS r
+                SELECT bh_http_get('{TARGET_SERVER}/req/' || id::VARCHAR) AS r
                 FROM range(10) AS t(id)
             )
         """).fetchall()
@@ -93,7 +93,7 @@ class TestRateLimiterPacing:
         """With burst=5, first 5 requests should fire immediately,
         then pacing kicks in."""
         con.execute(f"""
-            SET VARIABLE http_config = http_config_set(
+            SET VARIABLE bh_http_config = bh_http_config_set(
                 'default',
                 json_object(
                     'rate_limit', '5/s',
@@ -105,7 +105,7 @@ class TestRateLimiterPacing:
 
         con.execute(f"""
             SELECT r.response_status_code FROM (
-                SELECT http_get('{TARGET_SERVER}/req/' || id::VARCHAR) AS r
+                SELECT bh_http_get('{TARGET_SERVER}/req/' || id::VARCHAR) AS r
                 FROM range(8) AS t(id)
             )
         """).fetchall()
@@ -125,10 +125,10 @@ class TestRateLimiterPacing:
             )
 
     def test_rate_limit_stats_populated(self, con):
-        """After rate-limited requests, http_rate_limit_stats() should
+        """After rate-limited requests, bh_http_rate_limit_stats() should
         show pacing counters."""
         con.execute(f"""
-            SET VARIABLE http_config = http_config_set(
+            SET VARIABLE bh_http_config = bh_http_config_set(
                 'default',
                 json_object(
                     'rate_limit', '5/s',
@@ -140,12 +140,12 @@ class TestRateLimiterPacing:
 
         con.execute(f"""
             SELECT r.response_status_code FROM (
-                SELECT http_get('{TARGET_SERVER}/req/' || id::VARCHAR) AS r
+                SELECT bh_http_get('{TARGET_SERVER}/req/' || id::VARCHAR) AS r
                 FROM range(10) AS t(id)
             )
         """).fetchall()
 
-        rows = con.execute("SELECT * FROM http_rate_limit_stats()").fetchall()
+        rows = con.execute("SELECT * FROM bh_http_rate_limit_stats()").fetchall()
         assert len(rows) > 0
 
         # Find the row for localhost
@@ -186,7 +186,7 @@ class TestServerSide429:
 
         # Disable client-side pacing so all requests hit the server fast
         con.execute(f"""
-            SET VARIABLE http_config = http_config_set(
+            SET VARIABLE bh_http_config = bh_http_config_set(
                 'default',
                 json_object(
                     'rate_limit', '1000/s',
@@ -198,7 +198,7 @@ class TestServerSide429:
 
         results = con.execute(f"""
             SELECT r.response_status_code FROM (
-                SELECT http_get('{TARGET_SERVER}/req/' || id::VARCHAR) AS r
+                SELECT bh_http_get('{TARGET_SERVER}/req/' || id::VARCHAR) AS r
                 FROM range(10) AS t(id)
             )
         """).fetchall()
@@ -212,7 +212,7 @@ class TestServerSide429:
         assert count_429 > 0, f"Expected some 429 responses, got status codes: {status_codes}"
 
         # Check extension-side stats
-        rows = con.execute("SELECT * FROM http_rate_limit_stats()").fetchall()
+        rows = con.execute("SELECT * FROM bh_http_rate_limit_stats()").fetchall()
         localhost_row = [r for r in rows if "localhost" in r[0]][0]
         throttled = localhost_row[7]  # throttled_429
         assert throttled > 0, f"Expected throttled_429 > 0 in stats, got {throttled}"
@@ -228,7 +228,7 @@ class TestProxyRouting:
     def test_requests_routed_through_proxy(self, con):
         """Configure proxy, fire requests, verify proxy saw them."""
         con.execute(f"""
-            SET VARIABLE http_config = http_config_set(
+            SET VARIABLE bh_http_config = bh_http_config_set(
                 'default',
                 json_object(
                     'proxy', '{PROXY_SERVER}',
@@ -241,7 +241,7 @@ class TestProxyRouting:
 
         con.execute(f"""
             SELECT r.response_status_code FROM (
-                SELECT http_get('{TARGET_SERVER}/req/' || id::VARCHAR) AS r
+                SELECT bh_http_get('{TARGET_SERVER}/req/' || id::VARCHAR) AS r
                 FROM range(5) AS t(id)
             )
         """).fetchall()
@@ -260,7 +260,7 @@ class TestProxyRouting:
     def test_proxy_plus_rate_limiting(self, con):
         """Proxy + rate limiting together: requests go through proxy AND are paced."""
         con.execute(f"""
-            SET VARIABLE http_config = http_config_set(
+            SET VARIABLE bh_http_config = bh_http_config_set(
                 'default',
                 json_object(
                     'proxy', '{PROXY_SERVER}',
@@ -273,7 +273,7 @@ class TestProxyRouting:
 
         con.execute(f"""
             SELECT r.response_status_code FROM (
-                SELECT http_get('{TARGET_SERVER}/req/' || id::VARCHAR) AS r
+                SELECT bh_http_get('{TARGET_SERVER}/req/' || id::VARCHAR) AS r
                 FROM range(6) AS t(id)
             )
         """).fetchall()
@@ -301,7 +301,7 @@ class TestGlobalRateLimiter:
     def test_global_rate_limit(self, con):
         """Set a global rate limit and verify pacing."""
         con.execute(f"""
-            SET VARIABLE http_config = http_config_set(
+            SET VARIABLE bh_http_config = bh_http_config_set(
                 'default',
                 json_object(
                     'global_rate_limit', '5/s',
@@ -315,7 +315,7 @@ class TestGlobalRateLimiter:
 
         con.execute(f"""
             SELECT r.response_status_code FROM (
-                SELECT http_get('{TARGET_SERVER}/req/' || id::VARCHAR) AS r
+                SELECT bh_http_get('{TARGET_SERVER}/req/' || id::VARCHAR) AS r
                 FROM range(8) AS t(id)
             )
         """).fetchall()
@@ -328,7 +328,7 @@ class TestGlobalRateLimiter:
         )
 
         # Check that (global) row appears in rate limit stats
-        rows = con.execute("SELECT * FROM http_rate_limit_stats()").fetchall()
+        rows = con.execute("SELECT * FROM bh_http_rate_limit_stats()").fetchall()
         global_rows = [r for r in rows if r[0] == "(global)"]
         assert len(global_rows) == 1, f"Expected (global) row in stats, got: {[r[0] for r in rows]}"
         assert global_rows[0][4] == 8  # requests

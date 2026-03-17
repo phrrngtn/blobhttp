@@ -7,10 +7,10 @@
 --
 -- Returns VARCHAR: the completed text, or validated JSON string.
 --
--- The function reads http_config for auth, rate limiting, Vault secrets, etc.
--- Configure the gateway scope in http_config like any other endpoint:
+-- The function reads bh_http_config for auth, rate limiting, Vault secrets, etc.
+-- Configure the gateway scope in bh_http_config like any other endpoint:
 --
---   SET VARIABLE http_config = MAP {
+--   SET VARIABLE bh_http_config = MAP {
 --       'http://localhost:8080/': '{"vault_path": "secret/blobapi/bifrost",
 --                                   "auth_type": "bearer", "rate_limit": "5/s"}'
 --   };
@@ -22,7 +22,7 @@ CREATE OR REPLACE MACRO llm_complete(url, body,
     max_retries := 3) AS
     _llm_complete_raw(url, body,
         COALESCE(CAST(headers AS JSON), '{}'),
-        COALESCE(CAST(_http_config() AS JSON), '{}'),
+        COALESCE(CAST(_bh_http_config() AS JSON), '{}'),
         COALESCE(output_schema, ''),
         max_continuations,
         max_retries);

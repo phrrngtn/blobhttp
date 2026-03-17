@@ -280,7 +280,7 @@ LlmResult LlmCompleteLoop(
 }
 
 // ---------------------------------------------------------------------------
-// DuckDB scalar function: _llm_complete_raw
+// DuckDB scalar function: _llm_complete_raw (kept unprefixed — llm_* names are independent)
 // ---------------------------------------------------------------------------
 
 static void LlmCompleteScalarFunc(duckdb_function_info info,

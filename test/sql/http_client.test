@@ -5,87 +5,87 @@
 require http_enterprise
 
 # ---------------------------------------------------------------------------
-# negotiate_auth_header: error cases
+# bh_negotiate_auth_header: error cases
 # ---------------------------------------------------------------------------
 
-# negotiate_auth_header requires HTTPS
+# bh_negotiate_auth_header requires HTTPS
 statement error
-SELECT negotiate_auth_header('http://example.com');
+SELECT bh_negotiate_auth_header('http://example.com');
 ----
 Negotiate authentication requires HTTPS
 
-# negotiate_auth_header requires a valid URL
+# bh_negotiate_auth_header requires a valid URL
 statement error
-SELECT negotiate_auth_header('not-a-url');
+SELECT bh_negotiate_auth_header('not-a-url');
 ----
 Invalid URL
 
-# negotiate_auth_header_json requires HTTPS
+# bh_negotiate_auth_header_json requires HTTPS
 statement error
-SELECT negotiate_auth_header_json('http://example.com');
+SELECT bh_negotiate_auth_header_json('http://example.com');
 ----
 Negotiate authentication requires HTTPS
 
-# negotiate_auth_header_json requires a valid URL
+# bh_negotiate_auth_header_json requires a valid URL
 statement error
-SELECT negotiate_auth_header_json('not-a-url');
+SELECT bh_negotiate_auth_header_json('not-a-url');
 ----
 Invalid URL
 
 # ---------------------------------------------------------------------------
-# http_get: idempotent scalar GET (returns STRUCT)
+# bh_http_get: idempotent scalar GET (returns STRUCT)
 # ---------------------------------------------------------------------------
 
 query I
-SELECT r.response_status_code FROM (SELECT http_get('https://httpbin.org/get') AS r);
+SELECT r.response_status_code FROM (SELECT bh_http_get('https://httpbin.org/get') AS r);
 ----
 200
 
 # GET with custom headers (MAP syntax)
 query I
 SELECT json_extract_string(r.response_body, '$.headers.X-Custom')
-FROM (SELECT http_get('https://httpbin.org/get', headers := MAP {'X-Custom': 'test123'}) AS r);
+FROM (SELECT bh_http_get('https://httpbin.org/get', headers := MAP {'X-Custom': 'test123'}) AS r);
 ----
 test123
 
 # Response headers are MAP(VARCHAR, VARCHAR)
 query I
 SELECT r.response_headers['content-type']
-FROM (SELECT http_get('https://httpbin.org/get') AS r);
+FROM (SELECT bh_http_get('https://httpbin.org/get') AS r);
 ----
 application/json
 
 # ---------------------------------------------------------------------------
-# http_post: volatile scalar POST (returns STRUCT)
+# bh_http_post: volatile scalar POST (returns STRUCT)
 # ---------------------------------------------------------------------------
 
 query I
-SELECT r.response_status_code FROM (SELECT http_post('https://httpbin.org/post', body := '{"name": "duckdb"}', content_type := 'application/json') AS r);
+SELECT r.response_status_code FROM (SELECT bh_http_post('https://httpbin.org/post', body := '{"name": "duckdb"}', content_type := 'application/json') AS r);
 ----
 200
 
 query I
 SELECT json_extract_string(r.response_body, '$.json.name')
-FROM (SELECT http_post('https://httpbin.org/post', body := '{"name": "duckdb"}', content_type := 'application/json') AS r);
+FROM (SELECT bh_http_post('https://httpbin.org/post', body := '{"name": "duckdb"}', content_type := 'application/json') AS r);
 ----
 duckdb
 
 # ---------------------------------------------------------------------------
-# http_request: generic scalar (volatile, returns STRUCT)
+# bh_http_request: generic scalar (volatile, returns STRUCT)
 # ---------------------------------------------------------------------------
 
 query I
-SELECT r.response_status_code FROM (SELECT http_request('GET', 'https://httpbin.org/get') AS r);
+SELECT r.response_status_code FROM (SELECT bh_http_request('GET', 'https://httpbin.org/get') AS r);
 ----
 200
 
 query I
-SELECT r.response_status_code FROM (SELECT http_request('DELETE', 'https://httpbin.org/delete') AS r);
+SELECT r.response_status_code FROM (SELECT bh_http_request('DELETE', 'https://httpbin.org/delete') AS r);
 ----
 200
 
 query I
-SELECT r.response_status_code FROM (SELECT http_request('PUT', 'https://httpbin.org/put', body := '{"x": 1}', content_type := 'application/json') AS r);
+SELECT r.response_status_code FROM (SELECT bh_http_request('PUT', 'https://httpbin.org/put', body := '{"x": 1}', content_type := 'application/json') AS r);
 ----
 200
 
@@ -96,7 +96,7 @@ SELECT r.response_status_code FROM (SELECT http_request('PUT', 'https://httpbin.
 query II
 SELECT url, r.response_status_code AS status
 FROM (
-    SELECT url, http_get(url) AS r
+    SELECT url, bh_http_get(url) AS r
     FROM (VALUES ('https://httpbin.org/get'), ('https://httpbin.org/ip')) AS t(url)
 )
 ORDER BY url;
@@ -105,10 +105,10 @@ https://httpbin.org/get	200
 https://httpbin.org/ip	200
 
 # ---------------------------------------------------------------------------
-# http_request_json: JSON variant
+# bh_http_request_json: JSON variant
 # ---------------------------------------------------------------------------
 
 query I
-SELECT json_extract(http_request_json('GET', 'https://httpbin.org/get'), '$.response_status_code');
+SELECT json_extract(bh_http_request_json('GET', 'https://httpbin.org/get'), '$.response_status_code');
 ----
 200

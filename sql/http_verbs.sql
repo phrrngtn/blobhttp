@@ -12,82 +12,82 @@
 -- Params is a JSON object whose keys/values become URL query parameters.
 -- Compose layers with json_merge_patch(catalog_params, app_params).
 
-CREATE OR REPLACE MACRO http_get(url,
+CREATE OR REPLACE MACRO bh_http_get(url,
     headers := NULL::MAP(VARCHAR, VARCHAR),
     params := NULL::VARCHAR) AS
-    _http_raw_request('GET', url,
+    _bh_http_raw_request('GET', url,
         CAST(headers AS JSON), params, NULL, NULL,
-        CAST(_http_config() AS JSON));
+        CAST(_bh_http_config() AS JSON));
 
-CREATE OR REPLACE MACRO http_head(url,
+CREATE OR REPLACE MACRO bh_http_head(url,
     headers := NULL::MAP(VARCHAR, VARCHAR),
     params := NULL::VARCHAR) AS
-    _http_raw_request('HEAD', url,
+    _bh_http_raw_request('HEAD', url,
         CAST(headers AS JSON), params, NULL, NULL,
-        CAST(_http_config() AS JSON));
+        CAST(_bh_http_config() AS JSON));
 
-CREATE OR REPLACE MACRO http_options(url,
+CREATE OR REPLACE MACRO bh_http_options(url,
     headers := NULL::MAP(VARCHAR, VARCHAR),
     params := NULL::VARCHAR) AS
-    _http_raw_request('OPTIONS', url,
+    _bh_http_raw_request('OPTIONS', url,
         CAST(headers AS JSON), params, NULL, NULL,
-        CAST(_http_config() AS JSON));
+        CAST(_bh_http_config() AS JSON));
 
-CREATE OR REPLACE MACRO http_put(url,
+CREATE OR REPLACE MACRO bh_http_put(url,
     headers := NULL::MAP(VARCHAR, VARCHAR),
     params := NULL::VARCHAR,
     body := NULL::VARCHAR,
     content_type := NULL::VARCHAR) AS
-    _http_raw_request('PUT', url,
+    _bh_http_raw_request('PUT', url,
         CAST(headers AS JSON), params, body, content_type,
-        CAST(_http_config() AS JSON));
+        CAST(_bh_http_config() AS JSON));
 
-CREATE OR REPLACE MACRO http_delete(url,
+CREATE OR REPLACE MACRO bh_http_delete(url,
     headers := NULL::MAP(VARCHAR, VARCHAR),
     params := NULL::VARCHAR) AS
-    _http_raw_request('DELETE', url,
+    _bh_http_raw_request('DELETE', url,
         CAST(headers AS JSON), params, NULL, NULL,
-        CAST(_http_config() AS JSON));
+        CAST(_bh_http_config() AS JSON));
 
 -- Non-idempotent verbs: volatile, every call fires.
 
-CREATE OR REPLACE MACRO http_post(url,
+CREATE OR REPLACE MACRO bh_http_post(url,
     headers := NULL::MAP(VARCHAR, VARCHAR),
     params := NULL::VARCHAR,
     body := NULL::VARCHAR,
     content_type := NULL::VARCHAR) AS
-    _http_raw_request_volatile('POST', url,
+    _bh_http_raw_request_volatile('POST', url,
         CAST(headers AS JSON), params, body, content_type,
-        CAST(_http_config() AS JSON));
+        CAST(_bh_http_config() AS JSON));
 
-CREATE OR REPLACE MACRO http_patch(url,
+CREATE OR REPLACE MACRO bh_http_patch(url,
     headers := NULL::MAP(VARCHAR, VARCHAR),
     params := NULL::VARCHAR,
     body := NULL::VARCHAR,
     content_type := NULL::VARCHAR) AS
-    _http_raw_request_volatile('PATCH', url,
+    _bh_http_raw_request_volatile('PATCH', url,
         CAST(headers AS JSON), params, body, content_type,
-        CAST(_http_config() AS JSON));
+        CAST(_bh_http_config() AS JSON));
 
 -- Generic scalar: method is a runtime parameter, so must be volatile
 -- (we can't know at compile time whether it's idempotent).
 
-CREATE OR REPLACE MACRO http_request(method, url,
+CREATE OR REPLACE MACRO bh_http_request(method, url,
     headers := NULL::MAP(VARCHAR, VARCHAR),
     params := NULL::VARCHAR,
     body := NULL::VARCHAR,
     content_type := NULL::VARCHAR) AS
-    _http_raw_request_volatile(method, url,
+    _bh_http_raw_request_volatile(method, url,
         CAST(headers AS JSON), params, body, content_type,
-        CAST(_http_config() AS JSON));
+        CAST(_bh_http_config() AS JSON));
 
 -- JSON variant: wraps the STRUCT with to_json().
 
-CREATE OR REPLACE MACRO http_request_json(method, url,
+CREATE OR REPLACE MACRO bh_http_request_json(method, url,
     headers := NULL::MAP(VARCHAR, VARCHAR),
     params := NULL::VARCHAR,
     body := NULL::VARCHAR,
     content_type := NULL::VARCHAR) AS
-    to_json(_http_raw_request_volatile(method, url,
+    to_json(_bh_http_raw_request_volatile(method, url,
         CAST(headers AS JSON), params, body, content_type,
-        CAST(_http_config() AS JSON)));
+        CAST(_bh_http_config() AS JSON)));

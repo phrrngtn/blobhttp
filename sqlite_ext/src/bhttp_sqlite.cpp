@@ -244,8 +244,8 @@ static std::string ExecuteRequest(const std::string &method, const std::string &
 }
 
 /* ══════════════════════════════════════════════════════════════════════
- * Scalar: bhttp_request(method, url [, headers_json [, params_json
- *                        [, body [, content_type [, config_json]]]]])
+ * Scalar: bh_http_request(method, url [, headers_json [, params_json
+ *                          [, body [, content_type [, config_json]]]]])
  * Returns JSON string with full request/response envelope.
  * All optional args are JSON strings — uniform with DuckDB interface.
  * ══════════════════════════════════════════════════════════════════════ */
@@ -309,7 +309,7 @@ static void bhttp_request_func(sqlite3_context *ctx, int argc, sqlite3_value **a
 }
 
 /* ══════════════════════════════════════════════════════════════════════
- * Convenience: bhttp_get(url [, headers_json [, params_json [, config_json]]])
+ * Convenience: bh_http_get(url [, headers_json [, params_json [, config_json]]])
  * ══════════════════════════════════════════════════════════════════════ */
 
 static void bhttp_get_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
@@ -353,7 +353,7 @@ static void bhttp_get_func(sqlite3_context *ctx, int argc, sqlite3_value **argv)
 }
 
 /* ══════════════════════════════════════════════════════════════════════
- * Convenience: bhttp_post(url [, body [, headers_json [, params_json [, config_json]]]])
+ * Convenience: bh_http_post(url [, body [, headers_json [, params_json [, config_json]]]])
  * ══════════════════════════════════════════════════════════════════════ */
 
 static void bhttp_post_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
@@ -402,8 +402,8 @@ static void bhttp_post_func(sqlite3_context *ctx, int argc, sqlite3_value **argv
 }
 
 /* ══════════════════════════════════════════════════════════════════════
- * negotiate_auth_header(url) -> TEXT
- * negotiate_auth_header_json(url) -> JSON TEXT
+ * bh_negotiate_auth_header(url) -> TEXT
+ * bh_negotiate_auth_header_json(url) -> JSON TEXT
  * ══════════════════════════════════════════════════════════════════════ */
 
 static void negotiate_auth_header_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
@@ -441,7 +441,7 @@ static void negotiate_auth_header_json_func(sqlite3_context *ctx, int argc, sqli
 }
 
 /* ══════════════════════════════════════════════════════════════════════
- * bhttp_rate_limit_stats() -> JSON array
+ * bh_http_rate_limit_stats() -> JSON array
  * ══════════════════════════════════════════════════════════════════════ */
 
 static void bhttp_rate_limit_stats_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
@@ -479,7 +479,7 @@ static void bhttp_rate_limit_stats_func(sqlite3_context *ctx, int argc, sqlite3_
 }
 
 /* ══════════════════════════════════════════════════════════════════════
- * bhttp_adapt(adapter_name, params_json) -> JSON TEXT
+ * bh_http_adapt(adapter_name, params_json) -> JSON TEXT
  *
  * Looks up adapter from llm_adapter table, renders prompt via
  * template_render() (blobtemplates must be loaded), calls the LLM
@@ -804,31 +804,31 @@ int sqlite3_bhttp_init(sqlite3 *db, char **pzErrMsg,
 	SQLITE_EXTENSION_INIT2(pApi);
 	int rc;
 
-	rc = sqlite3_create_function(db, "bhttp_request", -1, SQLITE_UTF8, nullptr,
+	rc = sqlite3_create_function(db, "bh_http_request", -1, SQLITE_UTF8, nullptr,
 	                              bhttp_request_func, nullptr, nullptr);
 	if (rc != SQLITE_OK) return rc;
 
-	rc = sqlite3_create_function(db, "bhttp_get", -1, SQLITE_UTF8, nullptr,
+	rc = sqlite3_create_function(db, "bh_http_get", -1, SQLITE_UTF8, nullptr,
 	                              bhttp_get_func, nullptr, nullptr);
 	if (rc != SQLITE_OK) return rc;
 
-	rc = sqlite3_create_function(db, "bhttp_post", -1, SQLITE_UTF8, nullptr,
+	rc = sqlite3_create_function(db, "bh_http_post", -1, SQLITE_UTF8, nullptr,
 	                              bhttp_post_func, nullptr, nullptr);
 	if (rc != SQLITE_OK) return rc;
 
-	rc = sqlite3_create_function(db, "negotiate_auth_header", 1, SQLITE_UTF8, nullptr,
+	rc = sqlite3_create_function(db, "bh_negotiate_auth_header", 1, SQLITE_UTF8, nullptr,
 	                              negotiate_auth_header_func, nullptr, nullptr);
 	if (rc != SQLITE_OK) return rc;
 
-	rc = sqlite3_create_function(db, "negotiate_auth_header_json", 1, SQLITE_UTF8, nullptr,
+	rc = sqlite3_create_function(db, "bh_negotiate_auth_header_json", 1, SQLITE_UTF8, nullptr,
 	                              negotiate_auth_header_json_func, nullptr, nullptr);
 	if (rc != SQLITE_OK) return rc;
 
-	rc = sqlite3_create_function(db, "bhttp_rate_limit_stats", 0, SQLITE_UTF8, nullptr,
+	rc = sqlite3_create_function(db, "bh_http_rate_limit_stats", 0, SQLITE_UTF8, nullptr,
 	                              bhttp_rate_limit_stats_func, nullptr, nullptr);
 	if (rc != SQLITE_OK) return rc;
 
-	rc = sqlite3_create_function(db, "bhttp_adapt", 2, SQLITE_UTF8, nullptr,
+	rc = sqlite3_create_function(db, "bh_http_adapt", 2, SQLITE_UTF8, nullptr,
 	                              bhttp_adapt_func, nullptr, nullptr);
 	return rc;
 }

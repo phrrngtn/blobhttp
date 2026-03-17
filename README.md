@@ -34,21 +34,21 @@ cases. Key differences:
 
 | | [http_client](https://github.com/Query-farm/httpclient) | blobhttp |
 |---|---|---|
-| HTTP methods | GET, POST, HEAD | GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS + generic `http_request()` |
+| HTTP methods | GET, POST, HEAD | GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS + generic `bh_http_request()` |
 | Return type | JSON (access via `->>`) | Native STRUCT (access via `.field`) |
 | Volatility | Not specified | Correct per-verb: GET/HEAD/OPTIONS idempotent; POST/PATCH volatile |
-| Rate limiting | None | GCRA per-host + global, 429 backoff, `http_rate_limit_stats()` diagnostics |
+| Rate limiting | None | GCRA per-host + global, 429 backoff, `bh_http_rate_limit_stats()` diagnostics |
 | Parallel execution | None | libcurl multi interface, configurable `max_concurrent` |
 | Authentication | Manual headers | SPNEGO/Kerberos, Bearer with expiry checking, mutual TLS |
-| Configuration | Per-call only | Scoped config via `http_config` variable with URL prefix + domain-suffix matching |
+| Configuration | Per-call only | Scoped config via `bh_http_config` variable with URL prefix + domain-suffix matching |
 | SSL/TLS | Basic | Client certs (mTLS), custom CA bundles, `verify_ssl` toggle |
 | Proxy support | None | Configurable per-scope |
 | Extension API | C++ internal API | C Extension API (binary-compatible across DuckDB versions) |
 
-**Important:** The two extensions share function names (`http_get`, `http_post`,
-etc.) but have different signatures and return types. They cannot be loaded
-simultaneously, and SQL written for one will not work with the other without
-modification.
+**Important:** blobhttp uses `bh_` prefixed function names (`bh_http_get`,
+`bh_http_post`, etc.) to avoid conflicts with http_client. The two extensions
+have different signatures and return types; SQL written for one will not work
+with the other without modification.
 
 ## Loading
 
@@ -70,15 +70,15 @@ duckdb -unsigned -cmd "LOAD 'build/release/bhttp.duckdb_extension';"
 .load path/to/bhttp
 ```
 
-SQLite functions are prefixed with `bhttp_` to avoid conflicts with other
-extensions. The DuckDB functions use unprefixed names (`http_get`, etc.) via
-SQL macros that wrap the underlying `_http_raw_request` C function.
+Both DuckDB and SQLite functions use the `bh_` prefix (`bh_http_get`, etc.).
+In DuckDB, these are SQL macros that wrap the underlying `_bh_http_raw_request`
+C function. In SQLite, they are direct scalar/table-valued functions.
 
 | DuckDB | SQLite | Notes |
 |---|---|---|
-| `http_get(url, ...)` | `bhttp_get(url, ...)` | Named params (DuckDB) vs positional (SQLite) |
-| `http_post(url, ...)` | `bhttp_post(url, ...)` | |
-| `http_request(method, url, ...)` | `bhttp_request(method, url, ...)` | Generic, all verbs |
+| `bh_http_get(url, ...)` | `bh_http_get(url, ...)` | Named params (DuckDB) vs positional (SQLite) |
+| `bh_http_post(url, ...)` | `bh_http_post(url, ...)` | |
+| `bh_http_request(method, url, ...)` | `bh_http_request(method, url, ...)` | Generic, all verbs |
 | Returns STRUCT | Returns JSON string | SQLite has no STRUCT type |
 
 ## HTTP Functions
@@ -88,27 +88,27 @@ SQL macros that wrap the underlying `_http_raw_request` C function.
 Each returns a STRUCT with request and response details. Use a subquery or CTE
 to access individual fields via dot notation.
 
-`http_get`, `http_head`, `http_options`, `http_put`, and `http_delete` are
+`bh_http_get`, `bh_http_head`, `bh_http_options`, `bh_http_put`, and `bh_http_delete` are
 idempotent — DuckDB may safely deduplicate identical calls within a query.
-`http_post` and `http_patch` are volatile — every call fires regardless.
+`bh_http_post` and `bh_http_patch` are volatile — every call fires regardless.
 
 ```sql
 -- Simple GET with struct field access
 SELECT r.response_status_code, r.response_body
-FROM (SELECT http_get('https://httpbin.org/get') AS r);
+FROM (SELECT bh_http_get('https://httpbin.org/get') AS r);
 ```
 
 ```sql
 -- GET with custom headers
 SELECT r.response_body
-FROM (SELECT http_get('https://httpbin.org/get',
+FROM (SELECT bh_http_get('https://httpbin.org/get',
     headers := MAP {'X-Api-Key': 'secret123'}) AS r);
 ```
 
 ```sql
 -- POST with JSON body (volatile — always fires)
 SELECT r.response_status_code
-FROM (SELECT http_post('https://httpbin.org/post',
+FROM (SELECT bh_http_post('https://httpbin.org/post',
     body := '{"name": "duckdb"}',
     content_type := 'application/json') AS r);
 ```
@@ -116,7 +116,7 @@ FROM (SELECT http_post('https://httpbin.org/post',
 ```sql
 -- PUT with explicit content type
 SELECT r.response_status_code
-FROM (SELECT http_put('https://httpbin.org/put',
+FROM (SELECT bh_http_put('https://httpbin.org/put',
     body := '<item><name>test</name></item>',
     content_type := 'application/xml') AS r);
 ```
@@ -125,7 +125,7 @@ FROM (SELECT http_put('https://httpbin.org/put',
 -- Data-driven batch: fetch from a list of URLs
 SELECT url, r.response_status_code AS status, round(r.elapsed, 3) AS seconds
 FROM (
-    SELECT url, http_get(url) AS r
+    SELECT url, bh_http_get(url) AS r
     FROM (VALUES ('https://httpbin.org/get'), ('https://httpbin.org/ip')) AS t(url)
 )
 ORDER BY url;
@@ -135,30 +135,30 @@ ORDER BY url;
 -- Batch API calls driven by table data
 SELECT e.endpoint_url, r.response_status_code AS status
 FROM (
-    SELECT e.endpoint_url, http_get(e.endpoint_url) AS r
+    SELECT e.endpoint_url, bh_http_get(e.endpoint_url) AS r
     FROM endpoints AS e
     LEFT OUTER JOIN health_checks AS h ON h.url = e.endpoint_url
     WHERE h.url IS NULL
 );
 ```
 
-### Generic scalar function: `http_request(method, url, ...)`
+### Generic scalar function: `bh_http_request(method, url, ...)`
 
 For dynamic methods or when the verb isn't known at query-writing time. Always
 volatile (every call fires).
 
 ```sql
 SELECT r.response_status_code
-FROM (SELECT http_request('GET', 'https://httpbin.org/get') AS r);
+FROM (SELECT bh_http_request('GET', 'https://httpbin.org/get') AS r);
 ```
 
-### JSON variant: `http_request_json(method, url, ...)`
+### JSON variant: `bh_http_request_json(method, url, ...)`
 
-Returns the same result as `http_request` but serialized as a JSON string via
+Returns the same result as `bh_http_request` but serialized as a JSON string via
 DuckDB's `to_json()`.
 
 ```sql
-SELECT http_request_json('GET', 'https://httpbin.org/ip');
+SELECT bh_http_request_json('GET', 'https://httpbin.org/ip');
 ```
 
 ### STRUCT fields
@@ -189,24 +189,24 @@ All scalar functions return a STRUCT with the same fields:
 | `body` | VARCHAR | NULL | Request body (POST, PUT, PATCH only) |
 | `content_type` | VARCHAR | NULL | Content-Type (defaults to `application/json` if body is set) |
 
-The generic `http_request` also takes `method` (VARCHAR) as the first
+The generic `bh_http_request` also takes `method` (VARCHAR) as the first
 parameter.
 
 ```sql
 -- Query params as a JSON object (no string concatenation)
 SELECT r.response_body
-FROM (SELECT http_get('https://api.example.com/search',
+FROM (SELECT bh_http_get('https://api.example.com/search',
     params := '{"q": "duckdb", "limit": "10"}') AS r);
 
 -- Dynamic params via json_object()
 SELECT r.response_body
-FROM (SELECT http_get('https://api.example.com/search',
+FROM (SELECT bh_http_get('https://api.example.com/search',
     params := json_object('q', search_term, 'limit', '10')) AS r)
 FROM search_terms;
 
 -- Compose params from multiple sources with json_merge_patch
 SELECT r.response_body
-FROM (SELECT http_get(base_url,
+FROM (SELECT bh_http_get(base_url,
     params := json_merge_patch(
         '{"format": "json", "units": "metric"}',  -- base params
         json_object('lat', lat, 'lng', lng)         -- per-row params
@@ -223,7 +223,7 @@ once per row, regardless of how many fields you reference.
 ```sql
 -- Good: one request, access multiple fields
 WITH api_calls AS (
-    SELECT id, http_get('https://api.example.com/item/' || id) AS r
+    SELECT id, bh_http_get('https://api.example.com/item/' || id) AS r
     FROM items
 )
 SELECT id, r.response_status_code, r.response_body, r.elapsed
@@ -231,8 +231,8 @@ FROM api_calls;
 
 -- Bad: fires two requests per row (DuckDB evaluates each expression separately)
 SELECT
-    http_get(url).response_status_code,
-    http_get(url).elapsed
+    bh_http_get(url).response_status_code,
+    bh_http_get(url).elapsed
 FROM urls;
 ```
 
@@ -241,13 +241,13 @@ into a subquery and reference the result by name.
 
 ## Configuration
 
-Configuration is managed via a DuckDB variable (`http_config`) containing a
+Configuration is managed via a DuckDB variable (`bh_http_config`) containing a
 `MAP(VARCHAR, VARCHAR)`. Keys are URL prefixes (scopes); values are JSON
 objects with configuration fields. The longest matching prefix wins, with
 `'default'` as the fallback.
 
 ```sql
-SET VARIABLE http_config = MAP {
+SET VARIABLE bh_http_config = MAP {
     'default': '{"timeout": 30, "rate_limit": "20/s"}',
     'https://api.example.com/': '{"auth_type": "bearer", "bearer_token": "sk-abc123", "rate_limit": "5/s"}',
     'https://internal.corp.com/': '{"auth_type": "negotiate", "verify_ssl": false}'
@@ -275,15 +275,15 @@ SET VARIABLE http_config = MAP {
 
 ### How configuration flows
 
-The user-facing functions (`http_get`, `http_post`, etc.) are SQL macros that
-read `http_config` from the caller's connection via `getvariable()`, then pass
+The user-facing functions (`bh_http_get`, `bh_http_post`, etc.) are SQL macros that
+read `bh_http_config` from the caller's connection via `getvariable()`, then pass
 it to the underlying C functions. This means configuration set via
 `SET VARIABLE` is correctly visible during function execution.
 
 ### Scope resolution example
 
 ```sql
-SET VARIABLE http_config = MAP {
+SET VARIABLE bh_http_config = MAP {
     'default':                    '{"timeout": 30}',
     'https://api.example.com/':   '{"bearer_token": "abc", "rate_limit": "5/s"}',
     'https://api.example.com/v2/':'{"bearer_token": "xyz"}'
@@ -291,33 +291,33 @@ SET VARIABLE http_config = MAP {
 
 -- Uses default config (timeout=30, no auth)
 SELECT r.response_status_code
-FROM (SELECT http_get('https://other-site.com/data') AS r);
+FROM (SELECT bh_http_get('https://other-site.com/data') AS r);
 
 -- Matches 'https://api.example.com/' scope (bearer_token=abc, rate_limit=5/s)
 SELECT r.response_status_code
-FROM (SELECT http_get('https://api.example.com/v1/users') AS r);
+FROM (SELECT bh_http_get('https://api.example.com/v1/users') AS r);
 
 -- Matches 'https://api.example.com/v2/' scope (bearer_token=xyz)
 -- Also inherits timeout=30 from default
 SELECT r.response_status_code
-FROM (SELECT http_get('https://api.example.com/v2/users') AS r);
+FROM (SELECT bh_http_get('https://api.example.com/v2/users') AS r);
 ```
 
 ### Configuration helpers
 
 The extension provides helper macros for safely updating individual scopes
-without clobbering the rest of `http_config`.
+without clobbering the rest of `bh_http_config`.
 
 | Macro | Description |
 |-------|-------------|
-| `http_config_set(scope, config_json)` | Merge a scope's JSON config into the existing config, preserving all other scopes. Returns the new MAP. |
-| `http_config_set_bearer(scope, token, expires_at := 0)` | Convenience for setting a bearer token. Uses `json_object()` internally for safe JSON construction. |
-| `http_config_get(scope)` | Read a single scope's JSON config string (or NULL). |
-| `http_config_remove(scope)` | Remove a scope. Returns the new MAP. |
+| `bh_http_config_set(scope, config_json)` | Merge a scope's JSON config into the existing config, preserving all other scopes. Returns the new MAP. |
+| `bh_http_config_set_bearer(scope, token, expires_at := 0)` | Convenience for setting a bearer token. Uses `json_object()` internally for safe JSON construction. |
+| `bh_http_config_get(scope)` | Read a single scope's JSON config string (or NULL). |
+| `bh_http_config_remove(scope)` | Remove a scope. Returns the new MAP. |
 
 ```sql
 -- Set a scope's config (merges, doesn't clobber)
-SET VARIABLE http_config = http_config_set(
+SET VARIABLE bh_http_config = bh_http_config_set(
     'https://secure-api.corp.com/',
     json_object('client_cert', '/path/to/client.pem',
                 'client_key', '/path/to/client-key.pem',
@@ -325,20 +325,20 @@ SET VARIABLE http_config = http_config_set(
 );
 
 -- Set a bearer token with expiry (shorthand)
-SET VARIABLE http_config = http_config_set_bearer(
+SET VARIABLE bh_http_config = bh_http_config_set_bearer(
     'https://api.vendor.com/', 'eyJ...', expires_at := 1741564800
 );
 
 -- Refresh a token later — other scopes are preserved
-SET VARIABLE http_config = http_config_set_bearer(
+SET VARIABLE bh_http_config = bh_http_config_set_bearer(
     'https://api.vendor.com/', 'eyJnew...', expires_at := 1741571400
 );
 
 -- Inspect what's configured for a scope
-SELECT http_config_get('https://api.vendor.com/');
+SELECT bh_http_config_get('https://api.vendor.com/');
 
 -- Remove a scope entirely
-SET VARIABLE http_config = http_config_remove('https://api.vendor.com/');
+SET VARIABLE bh_http_config = bh_http_config_remove('https://api.vendor.com/');
 ```
 
 ### Vault / OpenBao integration
@@ -349,7 +349,7 @@ has a `vault_path`, blobhttp fetches the secret before making the request and
 injects it per `auth_type` — no vault CTEs or manual key handling in the query.
 
 ```sql
-SET VARIABLE http_config = MAP {
+SET VARIABLE bh_http_config = MAP {
     'default': '{"vault_addr": "http://127.0.0.1:8200", "vault_token": "dev-token"}',
     'https://api.geocod.io/': '{"vault_path": "secret/blobapi/geocodio", "auth_type": "bearer"}',
     'https://weather.visualcrossing.com/': '{"vault_path": "secret/blobapi/visualcrossing", "auth_type": "query_param", "vault_param_name": "key"}'
@@ -357,7 +357,7 @@ SET VARIABLE http_config = MAP {
 
 -- No API keys anywhere in the query — vault handles it
 SELECT json_extract_string(r.response_body, '$.results[0].formatted_address')
-FROM (SELECT http_get('https://api.geocod.io/v1.11/geocode',
+FROM (SELECT bh_http_get('https://api.geocod.io/v1.11/geocode',
     params := '{"q": "02458"}') AS r);
 ```
 
@@ -383,20 +383,20 @@ Works with both Vault and OpenBao (identical HTTP API).
 To authenticate with a client certificate:
 
 ```sql
-SET VARIABLE http_config = http_config_set(
+SET VARIABLE bh_http_config = bh_http_config_set(
     'https://secure-api.corp.com/',
     json_object('client_cert', '/path/to/client.pem',
                 'client_key', '/path/to/client-key.pem')
 );
 
 SELECT r.response_status_code
-FROM (SELECT http_get('https://secure-api.corp.com/endpoint') AS r);
+FROM (SELECT bh_http_get('https://secure-api.corp.com/endpoint') AS r);
 ```
 
 Combine with `ca_bundle` if the server uses a private CA:
 
 ```sql
-SET VARIABLE http_config = http_config_set(
+SET VARIABLE bh_http_config = bh_http_config_set(
     'https://secure-api.corp.com/',
     json_object('client_cert', '/path/to/client.pem',
                 'client_key', '/path/to/client-key.pem',
@@ -411,7 +411,7 @@ extension fails fast with a clear error rather than making a request that will
 be rejected:
 
 ```sql
-SET VARIABLE http_config = http_config_set_bearer(
+SET VARIABLE bh_http_config = bh_http_config_set_bearer(
     'https://api.vendor.com/', 'eyJ...', expires_at := 1741564800
 );
 ```
@@ -422,14 +422,14 @@ timestamps:
 ```
 Bearer token for api.vendor.com expired at 2025-03-10T00:00:00Z (1741564800)
 (current time: 2025-03-10T01:30:00Z (1741570200)).
-Refresh the token via your application and update http_config.
+Refresh the token via your application and update bh_http_config.
 ```
 
-Refresh by calling `http_config_set_bearer` again — existing config for other
+Refresh by calling `bh_http_config_set_bearer` again — existing config for other
 scopes is preserved:
 
 ```sql
-SET VARIABLE http_config = http_config_set_bearer(
+SET VARIABLE bh_http_config = bh_http_config_set_bearer(
     'https://api.vendor.com/', 'eyJnew...', expires_at := 1741571400
 );
 ```
@@ -441,7 +441,7 @@ per-host automatically. The default is 20 requests/second with a burst of 5.
 Override per-scope via configuration:
 
 ```sql
-SET VARIABLE http_config = MAP {
+SET VARIABLE bh_http_config = MAP {
     'default': '{"rate_limit": "20/s"}',
     'https://rate-limited-api.com/': '{"rate_limit": "2/s"}'
 };
@@ -457,19 +457,19 @@ chunk of rows to the scalar function, the extension fires up to
 ```sql
 -- Default: up to 10 concurrent requests per chunk
 SELECT json_extract(
-    http_request('GET', 'http://api.example.com/item/' || id::VARCHAR, NULL, NULL, NULL),
+    bh_http_request('GET', 'http://api.example.com/item/' || id::VARCHAR, NULL, NULL, NULL),
     '$.response_status_code')::INTEGER AS status
 FROM range(100) AS t(id);
 ```
 
 ```sql
 -- Throttle to 3 concurrent requests
-SET VARIABLE http_config = MAP {
+SET VARIABLE bh_http_config = MAP {
     'default': '{"max_concurrent": 3}'
 };
 
 SELECT json_extract(
-    http_request('GET', 'http://api.example.com/item/' || id::VARCHAR, NULL, NULL, NULL),
+    bh_http_request('GET', 'http://api.example.com/item/' || id::VARCHAR, NULL, NULL, NULL),
     '$.response_status_code')::INTEGER AS status
 FROM range(100) AS t(id);
 ```
@@ -492,12 +492,12 @@ is applied across multiple rows.
 
 ### Rate limiter diagnostics
 
-The `http_rate_limit_stats()` table function returns a snapshot of per-host
+The `bh_http_rate_limit_stats()` table function returns a snapshot of per-host
 rate limiter state. Call it after running requests to see how the rate limiter
 behaved.
 
 ```sql
-SELECT * FROM http_rate_limit_stats();
+SELECT * FROM bh_http_rate_limit_stats();
 ```
 
 | Column | Type | Description |
@@ -526,7 +526,7 @@ Example workflow:
 ```sql
 -- Fire some requests
 SELECT count(*) FROM (
-    SELECT http_request('GET', 'http://localhost:8444/fast', NULL, NULL, NULL) AS r
+    SELECT bh_http_request('GET', 'http://localhost:8444/fast', NULL, NULL, NULL) AS r
     FROM range(50) AS t(id)
 );
 
@@ -536,22 +536,22 @@ SELECT host, requests, total_responses, total_response_bytes,
        round(min_elapsed, 4) AS min_s,
        round(max_elapsed, 4) AS max_s,
        errors, paced, throttled_429
-FROM http_rate_limit_stats();
+FROM bh_http_rate_limit_stats();
 ```
 
 Example with a global rate limiter:
 
 ```sql
-SET VARIABLE http_config = MAP {
+SET VARIABLE bh_http_config = MAP {
     'default': '{"global_rate_limit": "10/s", "rate_limit": "100/s", "max_concurrent": 5}'
 };
 
 SELECT json_extract(
-    http_request('GET', 'http://api.example.com/item/' || id::VARCHAR, NULL, NULL, NULL),
+    bh_http_request('GET', 'http://api.example.com/item/' || id::VARCHAR, NULL, NULL, NULL),
     '$.response_status_code')::INTEGER AS status
 FROM range(15) AS t(id);
 
-SELECT * FROM http_rate_limit_stats();
+SELECT * FROM bh_http_rate_limit_stats();
 -- (global)   | 15 requests | 1955 bytes | paced=1 | pacing_s=0.986
 -- localhost  | 15 requests | 1955 bytes | paced=0
 ```
@@ -588,7 +588,7 @@ llm_adapt('physical_properties', params)          │
   │                                               │
   │ looks up adapter row ◄────────────────────────┘
   │ renders prompt via template_render() (inja)
-  │ merges session defaults (endpoint, model, http_config)
+  │ merges session defaults (endpoint, model, bh_http_config)
   │ merges caller overrides
   ▼
 _llm_adapt_raw(config_json)
@@ -818,7 +818,7 @@ protocol). To return arrays, wrap them in an object property.
 |---|---|---|
 | `llm_endpoint` | `http://localhost:8080/v1/chat/completions` | Chat completions URL |
 | `llm_model` | `anthropic/claude-haiku-4-5-20251001` | Default model |
-| `http_config` | `MAP {}` | Auth, rate limiting, Vault config |
+| `bh_http_config` | `MAP {}` | Auth, rate limiting, Vault config |
 
 ### Gateway setup (Bifrost)
 
@@ -846,14 +846,14 @@ Model names use `provider/model` format: `anthropic/claude-haiku-4-5-20251001`,
 
 ## Negotiate (SPNEGO/Kerberos) Authentication
 
-### `negotiate_auth_header(url)`
+### `bh_negotiate_auth_header(url)`
 
 Returns the `Authorization` header value for SPNEGO/Kerberos authentication.
 Requires a valid Kerberos ticket (`kinit` or OS-level SSO). The URL must be
 HTTPS.
 
 ```sql
-SELECT negotiate_auth_header('https://intranet.example.com/api/data');
+SELECT bh_negotiate_auth_header('https://intranet.example.com/api/data');
 -- Returns: 'Negotiate YIIGhgYJKoZI...'
 ```
 
@@ -861,29 +861,29 @@ Use it to authenticate HTTP requests to Kerberos-protected services:
 
 ```sql
 SELECT r.response_status_code, r.response_body
-FROM (SELECT http_get('https://intranet.example.com/api/data',
-    headers := MAP {'Authorization': negotiate_auth_header('https://intranet.example.com/api/data')}) AS r);
+FROM (SELECT bh_http_get('https://intranet.example.com/api/data',
+    headers := MAP {'Authorization': bh_negotiate_auth_header('https://intranet.example.com/api/data')}) AS r);
 ```
 
 Or configure it globally so all requests to a host auto-authenticate:
 
 ```sql
-SET VARIABLE http_config = MAP {
+SET VARIABLE bh_http_config = MAP {
     'https://intranet.example.com/': '{"auth_type": "negotiate"}'
 };
 
 -- No explicit headers needed — the token is generated and injected automatically
 SELECT r.response_status_code
-FROM (SELECT http_get('https://intranet.example.com/api/data') AS r);
+FROM (SELECT bh_http_get('https://intranet.example.com/api/data') AS r);
 ```
 
-### `negotiate_auth_header_json(url)`
+### `bh_negotiate_auth_header_json(url)`
 
 Returns a JSON object with the token and debugging metadata about the
 authentication process. Useful for diagnosing Kerberos issues.
 
 ```sql
-SELECT negotiate_auth_header_json('https://intranet.example.com/api/data');
+SELECT bh_negotiate_auth_header_json('https://intranet.example.com/api/data');
 ```
 
 Returns:
@@ -930,14 +930,14 @@ extraction is working as expected.
 
 - **Wrong SPN** — The extension constructs the SPN as `HTTP@hostname`. If
   your service is registered under a different SPN, you'll get an authentication
-  failure. Use `negotiate_auth_header_json(url)` to inspect the SPN being used.
+  failure. Use `bh_negotiate_auth_header_json(url)` to inspect the SPN being used.
 
 ### Bearer token expired
 
 The extension checks `bearer_token_expires_at` before each request. If your
 token has expired, you'll see an error with both ISO 8601 and Unix timestamps.
 Refresh the token in your hosting application and call
-`http_config_set_bearer` (see [Bearer token with expiry](#bearer-token-with-expiry)).
+`bh_http_config_set_bearer` (see [Bearer token with expiry](#bearer-token-with-expiry)).
 
 ### mTLS handshake failures
 
@@ -948,13 +948,13 @@ Refresh the token in your hosting application and call
 
 ### Dead-column elimination
 
-`SELECT count(*) FROM (SELECT http_get(url) FROM urls)` fires zero requests
+`SELECT count(*) FROM (SELECT bh_http_get(url) FROM urls)` fires zero requests
 because DuckDB's optimizer eliminates unused columns. Reference a field from
 the result to force evaluation:
 
 ```sql
 SELECT count(*) FROM (
-    SELECT (http_get(url)).response_status_code AS status FROM urls
+    SELECT (bh_http_get(url)).response_status_code AS status FROM urls
 );
 ```
 
@@ -1009,7 +1009,7 @@ curl -s http://localhost:8444/reset > /dev/null
 
 duckdb -unsigned -cmd "LOAD 'build/release/bhttp.duckdb_extension';" -c "
 SELECT id,
-       json_extract(http_request('GET',
+       json_extract(bh_http_request('GET',
            'http://localhost:8444/slow/' || id::VARCHAR || '?delay=0.3',
            NULL, NULL, NULL), '\$.response_status_code')::INTEGER AS status
 FROM range(10) AS t(id);
@@ -1029,12 +1029,12 @@ reports `peak_concurrent_connections: 10`.
 curl -s http://localhost:8444/reset > /dev/null
 
 duckdb -unsigned -cmd "LOAD 'build/release/bhttp.duckdb_extension';" -c "
-SET VARIABLE http_config = MAP {
+SET VARIABLE bh_http_config = MAP {
     'default': '{\"max_concurrent\": 3, \"rate_limit\": \"100/s\"}'
 };
 
 SELECT id,
-       json_extract(http_request('GET',
+       json_extract(bh_http_request('GET',
            'http://localhost:8444/slow/' || id::VARCHAR || '?delay=0.3',
            NULL, NULL, NULL), '\$.response_status_code')::INTEGER AS status
 FROM range(10) AS t(id);
@@ -1077,7 +1077,7 @@ print(f'Batches: {len(batches)} (sizes: {[len(b) for b in batches]})')
 duckdb -unsigned -cmd "LOAD 'build/release/bhttp.duckdb_extension';" -c "
 -- Run some requests first
 SELECT count(*) FROM (
-    SELECT http_request('GET', 'http://localhost:8444/fast', NULL, NULL, NULL)
+    SELECT bh_http_request('GET', 'http://localhost:8444/fast', NULL, NULL, NULL)
     FROM range(20) AS t(id)
 );
 
@@ -1085,7 +1085,7 @@ SELECT count(*) FROM (
 SELECT host, rate_limit, requests, paced, throttled_429,
        round(total_wait_seconds, 3) AS wait_s,
        round(backlog_seconds, 3) AS backlog_s
-FROM http_rate_limit_stats();
+FROM bh_http_rate_limit_stats();
 "
 ```
 
@@ -1101,12 +1101,12 @@ python3 test/flask_negotiate_server.py
 duckdb -unsigned -cmd "LOAD 'build/release/bhttp.duckdb_extension';" -c "
     -- Health check (no auth required)
     SELECT r.response_status_code
-    FROM (SELECT http_get('https://localhost:8443/health') AS r);
+    FROM (SELECT bh_http_get('https://localhost:8443/health') AS r);
 
     -- Authenticated request
     SELECT r.response_status_code, r.response_body
-    FROM (SELECT http_get('https://localhost:8443/data.json',
-        headers := MAP {'Authorization': negotiate_auth_header('https://localhost:8443/data.json')}) AS r);
+    FROM (SELECT bh_http_get('https://localhost:8443/data.json',
+        headers := MAP {'Authorization': bh_negotiate_auth_header('https://localhost:8443/data.json')}) AS r);
 "
 ```
 

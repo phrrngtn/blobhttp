@@ -15,8 +15,8 @@ Usage:
 
     # Test with DuckDB:
     duckdb -unsigned -cmd "LOAD 'build/release/bhttp.duckdb_extension';" -c "
-        SELECT * FROM http_get('https://localhost:8443/data.json',
-            headers := MAP {'Authorization': negotiate_auth_header('https://localhost:8443/data.json')});
+        SELECT * FROM bh_http_get('https://localhost:8443/data.json',
+            headers := MAP {'Authorization': bh_negotiate_auth_header('https://localhost:8443/data.json')});
     "
 
 For full Kerberos validation, set KRB5_KTNAME to point to a keytab containing

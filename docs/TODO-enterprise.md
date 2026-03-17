@@ -22,22 +22,22 @@ So the implementation would use the extension's own HTTP machinery to push its
 own statistics — which means telemetry requests must be excluded from the
 counters they report, or you get infinite regress.
 
-Configuration would fit naturally into `http_config`:
+Configuration would fit naturally into `bh_http_config`:
 
 ```sql
-SET VARIABLE http_config = http_config_set(
+SET VARIABLE bh_http_config = bh_http_config_set(
     'default',
     json_object('telemetry_sink', 'http://otel-collector:4318/v1/metrics')
 );
 ```
 
 Push triggers (in order of complexity):
-1. Explicit `http_flush_stats(sink_url)` — user controls when
+1. Explicit `bh_http_flush_stats(sink_url)` — user controls when
 2. On extension unload — automatic, best-effort, no threads
 3. Every N requests or T seconds — needs a timer or piggyback mechanism
 
 Start with (1) and (2). If someone wants continuous push, they can call
-`http_flush_stats()` on an interval from SQL.
+`bh_http_flush_stats()` on an interval from SQL.
 
 ## Bandwidth limiting
 
@@ -102,10 +102,10 @@ The pattern is:
 3. Use that token for subsequent API calls
 4. Re-authenticate when the token expires
 
-Today this is handled via the `http_config_set_bearer` helper macro:
+Today this is handled via the `bh_http_config_set_bearer` helper macro:
 
 ```sql
-SET VARIABLE http_config = http_config_set_bearer(
+SET VARIABLE bh_http_config = bh_http_config_set_bearer(
     'https://api.corp.com/', 'eyJ...', expires_at := 1741564800
 );
 ```
@@ -115,7 +115,7 @@ Or from a Python hosting application:
 ```python
 token, expires_at = get_vendor_token()  # your multi-hop auth chain
 con.execute(
-    "SET VARIABLE http_config = http_config_set_bearer($1, $2, expires_at := $3)",
+    "SET VARIABLE bh_http_config = bh_http_config_set_bearer($1, $2, expires_at := $3)",
     ['https://api.corp.com/', token, expires_at]
 )
 ```
@@ -131,7 +131,7 @@ refresh chain. A better approach would be extension-level token caching:
   `token_expiry_field` (JSON path to extract expiry from the token response)
 
 ```sql
-SET VARIABLE http_config = http_config_set(
+SET VARIABLE bh_http_config = bh_http_config_set(
     'https://api.corp.com/',
     json_object('auth_type', 'bearer',
                 'token_endpoint', 'https://auth.corp.com/token',
@@ -156,7 +156,7 @@ Open questions:
 
 Vault is a common secrets backend in enterprise environments. The extension
 could fetch secrets (bearer tokens, API keys, client certificates) from Vault
-at request time, rather than requiring them to be set in `http_config`.
+at request time, rather than requiring them to be set in `bh_http_config`.
 
 Two integration patterns:
 
@@ -167,7 +167,7 @@ secret from Vault before making the HTTP request. The secret value populates
 the bearer token (or other auth fields).
 
 ```sql
-SET VARIABLE http_config = http_config_set(
+SET VARIABLE bh_http_config = bh_http_config_set(
     'https://api.corp.com/',
     json_object('auth_type', 'bearer',
                 'vault_addr', 'https://vault.corp.com',

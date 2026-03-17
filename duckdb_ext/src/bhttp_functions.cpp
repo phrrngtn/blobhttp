@@ -227,7 +227,7 @@ BuildSession(const HttpBindData &bind_data, const HttpConfig &config) {
 				    "Bearer token for " + ExtractHost(bind_data.url) +
 				    " expired at " + format_time(config.bearer_token_expires_at) +
 				    " (current time: " + format_time(now_epoch) +
-				    "). Refresh the token via your application and update http_config.");
+				    "). Refresh the token via your application and update bh_http_config.");
 			}
 		}
 		cpr_headers["Authorization"] = "Bearer " + config.bearer_token;
@@ -353,8 +353,8 @@ void RecordResponseStats(const cpr::Response &response, const std::string &host)
 }
 
 // ---------------------------------------------------------------------------
-// Scalar function: _http_raw_request(method, url, headers_map, body,
-//                                    content_type, config_json)
+// Scalar function: _bh_http_raw_request(method, url, headers_map, body,
+//                                       content_type, config_json)
 // Returns a STRUCT with the full request/response envelope.
 // ---------------------------------------------------------------------------
 
@@ -641,13 +641,13 @@ static void RegisterHttpScalarVariant(duckdb_connection connection, const char *
 
 static void RegisterHttpRawRequestScalar(duckdb_connection connection) {
 	// Idempotent variant: safe to deduplicate identical calls (GET, HEAD, etc.)
-	RegisterHttpScalarVariant(connection, "_http_raw_request", false);
+	RegisterHttpScalarVariant(connection, "_bh_http_raw_request", false);
 	// Volatile variant: every call fires regardless of argument identity (POST, PATCH, etc.)
-	RegisterHttpScalarVariant(connection, "_http_raw_request_volatile", true);
+	RegisterHttpScalarVariant(connection, "_bh_http_raw_request_volatile", true);
 }
 
 // ---------------------------------------------------------------------------
-// Table function: http_rate_limit_stats()
+// Table function: bh_http_rate_limit_stats()
 // Returns one row per host with rate limiter diagnostics.
 // ---------------------------------------------------------------------------
 
@@ -795,7 +795,7 @@ static void RateLimitStatsExecute(duckdb_function_info info, duckdb_data_chunk o
 
 static void RegisterRateLimitStatsFunction(duckdb_connection connection) {
 	duckdb_table_function function = duckdb_create_table_function();
-	duckdb_table_function_set_name(function, "http_rate_limit_stats");
+	duckdb_table_function_set_name(function, "bh_http_rate_limit_stats");
 
 	duckdb_table_function_set_bind(function, RateLimitStatsBind);
 	duckdb_table_function_set_init(function, RateLimitStatsInit);
@@ -821,8 +821,8 @@ void RegisterHttpMacros(duckdb_connection connection) {
 	// SQL macros are defined in sql/*.sql files, embedded at build time
 	// by cmake/embed_sql.py into sql_resources.hpp.  Each file becomes
 	// a vector of SQL statements (split on semicolons, comments stripped).
-	// Registration order matters: http_config first (provides _http_config),
-	// then verbs (depend on _http_config), then helpers (depend on both).
+	// Registration order matters: http_config first (provides _bh_http_config),
+	// then verbs (depend on _bh_http_config), then helpers (depend on both).
 	const std::vector<std::vector<std::string> *> macro_groups = {
 		const_cast<std::vector<std::string> *>(&sql::http_config),
 		const_cast<std::vector<std::string> *>(&sql::http_verbs),
