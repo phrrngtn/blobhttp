@@ -1,0 +1,58 @@
+name: Build and publish wheels
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    # When a Mac runner is available, use: runs-on: ${{ matrix.os }}
+    # with strategy.matrix.os: [ubuntu-latest, macos-arm64]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.11", "3.12", "3.13", "3.14"]
+        target: [python, duckdb, sqlite]
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Install Python ${{ matrix.python }}
+        run: uv python install ${{ matrix.python }}
+
+      - name: Set build directory
+        id: builddir
+        run: |
+          case "${{ matrix.target }}" in
+            python) echo "dir=." >> "$GITHUB_OUTPUT" ;;
+            duckdb) echo "dir=ext/duckdb" >> "$GITHUB_OUTPUT" ;;
+            sqlite) echo "dir=ext/sqlite" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Check package exists
+        id: check
+        run: |
+          if [ -f "${{ steps.builddir.outputs.dir }}/pyproject.toml" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build wheel
+        if: steps.check.outputs.exists == 'true'
+        run: |
+          cd ${{ steps.builddir.outputs.dir }}
+          uv build --python ${{ matrix.python }}
+
+      - name: Publish to Forgejo PyPI
+        if: steps.check.outputs.exists == 'true'
+        env:
+          FORGEJO_TOKEN: ${{ secrets.PYPI_PUBLISH_TOKEN }}
+        run: |
+          cd ${{ steps.builddir.outputs.dir }}
+          uv publish \
+            --publish-url "${{ github.server_url }}/api/packages/${{ github.repository_owner }}/pypi" \
+            --token "$FORGEJO_TOKEN" \
+            dist/* || true  # don't fail on 409 (already exists)
