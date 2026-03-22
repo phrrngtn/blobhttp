@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "blobhttp-sqlite"
-version = "0.1.0"
+version = "0.2.0"
 description = "HTTP requests and LLM integration as SQL functions — Sqlite extension"
 requires-python = ">=3.8"
 license = {text = "MIT"}
