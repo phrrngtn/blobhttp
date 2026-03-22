@@ -1,0 +1,16 @@
+[build-system]
+requires = ["scikit-build-core>=0.5"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "blobhttp-sqlite"
+version = "0.1.0"
+description = "HTTP requests and LLM integration as SQL functions — Sqlite extension"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [{name = "Paul Harrington"}]
+dependencies = []
+
+[tool.scikit-build]
+wheel.packages = ["blobhttp_sqlite"]
+sdist.include = ["src/**", "include/**", "sqlite_ext/**"]

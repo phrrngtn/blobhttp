@@ -184,4 +184,5 @@ if(BUILD_PYTHON_BINDINGS)
   bhttp_platform_setup(blobhttp_ext)
   set_target_properties(blobhttp_ext PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/python/blobhttp")
+  install(TARGETS blobhttp_ext LIBRARY DESTINATION blobhttp)
 endif()
