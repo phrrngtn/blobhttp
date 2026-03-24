@@ -15,11 +15,13 @@ conn = sqlite3.connect(":memory:")
 conn.enable_load_extension(True)
 conn.load_extension(extension_path())
 
-for func in EXPECTED_FUNCTIONS:
-    try:
-        conn.execute(f"SELECT {func}('dummy')")
-    except sqlite3.OperationalError as e:
-        if "no such function" in str(e).lower():
-            raise AssertionError(f"Function {func} not registered") from e
+registered = set(
+    row[0]
+    for row in conn.execute("SELECT name FROM pragma_function_list").fetchall()
+)
 
-print(f"OK: all {len(EXPECTED_FUNCTIONS)} expected functions present")
+missing = [f for f in EXPECTED_FUNCTIONS if f not in registered]
+if missing:
+    raise AssertionError(f"Missing functions: {missing}")
+
+print(f"OK: all {len(EXPECTED_FUNCTIONS)} expected functions present in pragma_function_list")
