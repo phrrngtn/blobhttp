@@ -6,11 +6,10 @@ on:
 
 jobs:
   build:
-    # When a Mac runner is available, use: runs-on: ${{ matrix.os }}
-    # with strategy.matrix.os: [ubuntu-latest, macos-arm64]
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
+        os: [ubuntu-latest, macos-arm64]
         python: ["3.11", "3.12", "3.13", "3.14"]
         target: [python, duckdb, sqlite]
     steps:
