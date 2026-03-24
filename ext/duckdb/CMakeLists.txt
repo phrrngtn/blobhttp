@@ -131,3 +131,9 @@ target_link_libraries(${EXTENSION_NAME} PRIVATE ${BHTTP_LIBS})
 bhttp_platform_setup(${EXTENSION_NAME})
 
 install(TARGETS ${EXTENSION_NAME} LIBRARY DESTINATION blobhttp_duckdb/)
+
+# Bundle SQL macros that depend on other extensions (llm_adapt, llm_complete).
+# These can't be embedded in the C extension because they reference functions
+# from blobtemplates which may not be loaded at extension init time.
+install(DIRECTORY ${ROOT}/sql/ DESTINATION blobhttp_duckdb/sql
+        FILES_MATCHING PATTERN "llm_*.sql")
