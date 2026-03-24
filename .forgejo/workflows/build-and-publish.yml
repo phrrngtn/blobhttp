@@ -49,10 +49,14 @@ jobs:
         if: steps.check.outputs.exists == 'true' && matrix.target != 'python'
         run: |
           cp ${{ steps.builddir.outputs.dir }}/test_extension.py /tmp/test_extension.py
+          EXTRA_DEPS=""
+          if [ "${{ matrix.target }}" = "duckdb" ]; then
+            EXTRA_DEPS="--with duckdb"
+          fi
           cd /tmp
           uv run --python ${{ matrix.python }} \
             --with ${{ github.workspace }}/${{ steps.builddir.outputs.dir }}/dist/*.whl \
-            --no-project python test_extension.py
+            $EXTRA_DEPS --no-project python test_extension.py
 
       - name: Smoke test Python package
         if: steps.check.outputs.exists == 'true' && matrix.target == 'python'
