@@ -48,14 +48,18 @@ jobs:
       - name: Smoke test extension
         if: steps.check.outputs.exists == 'true' && matrix.target != 'python'
         run: |
-          cd ${{ steps.builddir.outputs.dir }}
-          uv run --python ${{ matrix.python }} --with dist/*.whl \
+          cp ${{ steps.builddir.outputs.dir }}/test_extension.py /tmp/test_extension.py
+          cd /tmp
+          uv run --python ${{ matrix.python }} \
+            --with ${{ github.workspace }}/${{ steps.builddir.outputs.dir }}/dist/*.whl \
             --no-project python test_extension.py
 
       - name: Smoke test Python package
         if: steps.check.outputs.exists == 'true' && matrix.target == 'python'
         run: |
-          uv run --python ${{ matrix.python }} --with dist/*.whl \
+          cd /tmp
+          uv run --python ${{ matrix.python }} \
+            --with ${{ github.workspace }}/dist/*.whl \
             --no-project python -c "import blobhttp; print('blobhttp loaded OK')"
 
       - name: Publish to Forgejo PyPI
