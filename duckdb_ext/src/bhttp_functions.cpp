@@ -167,6 +167,7 @@ struct HttpResult {
 	std::string response_url;
 	double elapsed = 0.0;
 	int redirect_count = 0;
+	std::string response_blob;  // raw bytes (same data as response_body, but preserved as BLOB)
 };
 
 //! Map a method string to cpr::MultiPerform::HttpMethod.
@@ -299,6 +300,7 @@ static HttpResult ResponseToResult(const cpr::Response &response, const HttpBind
 		result.response_headers.emplace_back(lower_k, v);
 	}
 	result.response_body = response.text;
+	result.response_blob = response.text;  // same bytes, will be written as BLOB
 	result.response_url = response.url.str();
 	result.elapsed = response.elapsed;
 	result.redirect_count = static_cast<int>(response.redirect_count);
@@ -418,6 +420,12 @@ static void WriteResultScalarFields(duckdb_vector output, idx_t row, const HttpR
 	set_varchar(8, result.response_url);
 	set_double(9, result.elapsed);
 	set_int(10, result.redirect_count);
+	// field 11: response_blob — raw bytes as BLOB (preserves null bytes that VARCHAR truncates)
+	{
+		duckdb_vector vec = duckdb_struct_vector_get_child(output, 11);
+		duckdb_vector_assign_string_element_len(vec, row,
+			result.response_blob.data(), result.response_blob.size());
+	}
 }
 
 static void HttpRawRequestScalarFunc(duckdb_function_info info, duckdb_data_chunk input, duckdb_vector output) {
@@ -575,6 +583,7 @@ static duckdb_logical_type CreateHttpResultStructType() {
 	duckdb_logical_type varchar_type = duckdb_create_logical_type(DUCKDB_TYPE_VARCHAR);
 	duckdb_logical_type int_type = duckdb_create_logical_type(DUCKDB_TYPE_INTEGER);
 	duckdb_logical_type double_type = duckdb_create_logical_type(DUCKDB_TYPE_DOUBLE);
+	duckdb_logical_type blob_type = duckdb_create_logical_type(DUCKDB_TYPE_BLOB);
 	duckdb_logical_type map_type = duckdb_create_map_type(varchar_type, varchar_type);
 
 	duckdb_logical_type member_types[] = {
@@ -582,21 +591,24 @@ static duckdb_logical_type CreateHttpResultStructType() {
 	    int_type,                                                 // response_status_code
 	    varchar_type, map_type,     varchar_type, varchar_type,  // response_status, headers, body, url
 	    double_type,                                              // elapsed
-	    int_type                                                  // redirect_count
+	    int_type,                                                 // redirect_count
+	    blob_type                                                 // response_blob
 	};
 	const char *member_names[] = {
 	    "request_url", "request_method", "request_headers", "request_body",
 	    "response_status_code",
 	    "response_status", "response_headers", "response_body", "response_url",
 	    "elapsed",
-	    "redirect_count"
+	    "redirect_count",
+	    "response_blob"
 	};
 
-	duckdb_logical_type struct_type = duckdb_create_struct_type(member_types, member_names, 11);
+	duckdb_logical_type struct_type = duckdb_create_struct_type(member_types, member_names, 12);
 
 	duckdb_destroy_logical_type(&varchar_type);
 	duckdb_destroy_logical_type(&int_type);
 	duckdb_destroy_logical_type(&double_type);
+	duckdb_destroy_logical_type(&blob_type);
 	duckdb_destroy_logical_type(&map_type);
 
 	return struct_type;
