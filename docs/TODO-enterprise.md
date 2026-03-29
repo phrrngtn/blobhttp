@@ -88,21 +88,31 @@ supported. See README for usage.
 
 ## Expiring bearer tokens
 
-**Partially implemented.** The `bearer_token_expires_at` config field enables
-the extension to check token expiry before each request and fail fast with a
-clear error. The hosting application owns the refresh chain. See README for
-usage. What remains is extension-level automatic token refresh (below).
+**Implemented.** Two complementary mechanisms:
 
-Many corporate environments issue short-lived bearer tokens via a token
-endpoint that itself requires authentication (often Kerberos/Negotiate).
-The pattern is:
+### 1. OpenBao vault integration (preferred for production)
 
-1. Authenticate to a token service using Negotiate (SPNEGO)
-2. Receive a bearer token with an expiry (e.g. 1 hour)
-3. Use that token for subsequent API calls
-4. Re-authenticate when the token expires
+`vault_path` + `auth_type=bearer` fetches secrets from OpenBao at request
+time with a 5-minute in-process cache. For OAuth-bearing APIs like Google
+Sheets/Drive, OpenBao's GCP secrets engine can mint short-lived access
+tokens on demand — no refresh logic in blobhttp or the hosting application.
 
-Today this is handled via the `bh_http_config_set_bearer` helper macro:
+```sql
+SET VARIABLE bh_http_config = bh_http_config_set(
+    'https://sheets.googleapis.com/',
+    json_object('auth_type', 'bearer',
+                'vault_path', 'gcp/token/sheets-reader',
+                'vault_addr', 'http://127.0.0.1:8200',
+                'vault_token', current_setting('vault_token'))
+);
+-- OpenBao mints a fresh Google access token; blobhttp caches it for 5 min
+```
+
+### 2. Manual bearer token with expiry (for ad-hoc / notebook use)
+
+`bh_http_config_set_bearer` lets the hosting application push a token with
+an explicit expiry. The extension checks `bearer_token_expires_at` before
+each request and fails fast with a clear error.
 
 ```sql
 SET VARIABLE bh_http_config = bh_http_config_set_bearer(
@@ -110,93 +120,42 @@ SET VARIABLE bh_http_config = bh_http_config_set_bearer(
 );
 ```
 
-Or from a Python hosting application:
+### ~~Extension-level automatic token refresh~~ (not planned)
 
-```python
-token, expires_at = get_vendor_token()  # your multi-hop auth chain
-con.execute(
-    "SET VARIABLE bh_http_config = bh_http_config_set_bearer($1, $2, expires_at := $3)",
-    ['https://api.corp.com/', token, expires_at]
-)
-```
+Previously this document proposed `token_endpoint`, `token_auth_type`, and
+`token_expiry_field` config fields that would let blobhttp itself call a
+token endpoint and cache the result. **This approach is superseded by the
+OpenBao integration** for the following reasons:
 
-The helpers handle merging safely, but the hosting application still owns the
-refresh chain. A better approach would be extension-level token caching:
+- **OpenBao already does this.** Its secrets engines (GCP, AWS, Azure,
+  LDAP, database, etc.) handle credential minting, rotation, TTL, and
+  lease management. Reimplementing token refresh inside blobhttp would
+  duplicate what a purpose-built secrets manager already provides.
+- **Violates side-effect-free.** Automatic token refresh is hidden state
+  that affects whether a request succeeds. The extension's behavior would
+  depend on timing, cache state, and reachability of an external token
+  endpoint — none of which are visible to the SQL caller.
+- **Scope creep.** Supporting OAuth2 client_credentials, Negotiate/SPNEGO
+  token exchange, and arbitrary token response formats pulls the extension
+  toward being an auth framework rather than an HTTP client.
+- **Two mechanisms suffice.** Vault for automated/production pipelines,
+  manual bearer for interactive sessions. There is no gap that extension-
+  level refresh would fill.
 
-- A process-global token cache keyed by token endpoint URL
-- Each entry stores: token, expiry timestamp, the auth method used to obtain it
-- On request, if the cached token is expired (or absent), the extension
-  automatically re-authenticates and caches the new token
-- Config fields: `token_endpoint`, `token_auth_type` (defaults to "negotiate"),
-  `token_expiry_field` (JSON path to extract expiry from the token response)
+## OpenBao / Vault integration
 
-```sql
-SET VARIABLE bh_http_config = bh_http_config_set(
-    'https://api.corp.com/',
-    json_object('auth_type', 'bearer',
-                'token_endpoint', 'https://auth.corp.com/token',
-                'token_auth_type', 'negotiate')
-);
--- Now requests to api.corp.com automatically obtain and refresh tokens
-```
+**Implemented.** See `vault_path`, `vault_addr`, `vault_token`, `vault_field`,
+`vault_param_name`, `vault_kv_version` in `bh_http_config`. The extension
+fetches secrets via direct HTTP GET to OpenBao/Vault, with a 5-minute
+process-global cache (thread-safe, keyed by addr+path+field).
 
-The extension already has the building blocks: Negotiate auth, HTTP client,
-per-host config scoping, and process-global caches (rate limiters, sessions).
-The token cache would follow the same LRU pool pattern.
+Supports KV v1 and v2 secrets engines. Auth injection modes: `bearer`
+(Authorization header) and `query_param`.
 
-Open questions:
-- Should the token response format be configurable, or assume a convention
-  (e.g. `{"access_token": "...", "expires_in": 3600}`)?
-- Should the extension support OAuth2 client_credentials grant as another
-  token_auth_type?
-- Thread safety: token refresh must be serialized per endpoint (mutex per
-  cache entry) to avoid thundering herd on expiry.
-
-## HashiCorp Vault integration
-
-Vault is a common secrets backend in enterprise environments. The extension
-could fetch secrets (bearer tokens, API keys, client certificates) from Vault
-at request time, rather than requiring them to be set in `bh_http_config`.
-
-Two integration patterns:
-
-**1. Vault as a token/secret source (simpler)**
-
-A config field like `vault_secret_path` that tells the extension to read a
-secret from Vault before making the HTTP request. The secret value populates
-the bearer token (or other auth fields).
-
-```sql
-SET VARIABLE bh_http_config = bh_http_config_set(
-    'https://api.corp.com/',
-    json_object('auth_type', 'bearer',
-                'vault_addr', 'https://vault.corp.com',
-                'vault_secret_path', 'secret/data/api-corp-com/token',
-                'vault_token_field', 'access_token')
-);
-```
-
-The extension would `GET` the Vault secret endpoint (using its own HTTP
-machinery), extract the token, and cache it with TTL awareness (Vault leases
-have TTLs). This is essentially the expiring-bearer-token pattern above, with
-Vault as the token endpoint.
-
-**2. Vault as a PKI backend (mTLS certificates)**
-
-Vault's PKI secrets engine can issue short-lived client certificates. The
-extension could request a certificate from Vault, write it to a temp file (or
-use in-memory SSL context if cpr supports it), and use it for mTLS. This is
-more complex but eliminates the need to manage certificate files on disk.
-
-**Authentication to Vault itself** is the bootstrap problem. Options:
-- Vault token in config (simple but the token itself needs management)
-- Kubernetes auth (if running in k8s — the service account JWT is available)
-- LDAP/Kerberos auth (the extension already has Negotiate — could use it to
-  authenticate to Vault if Vault is configured with Kerberos auth)
-
-Start with pattern (1) — Vault as a bearer token source. It's the most
-immediately useful and builds on the expiring-bearer-token cache. Pattern (2)
-is a natural follow-on once (1) works.
+**Not yet implemented:**
+- Vault PKI backend for mTLS certificates (issue short-lived client certs
+  from Vault's PKI secrets engine, eliminating cert file management)
+- Non-token auth to Vault itself (Kubernetes auth, LDAP/Kerberos)
 
 ## Request tagging / correlation IDs
 
