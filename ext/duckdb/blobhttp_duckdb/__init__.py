@@ -16,11 +16,10 @@ def extension_path() -> str:
     Usage:
         LOAD '<path>';  -- in DuckDB with allow_unsigned_extensions
     """
-    for name in ("libbhttp.dylib", "libbhttp.so", "bhttp.dll", "bhttp.duckdb_extension"):
-        ext = _HERE / name
-        if ext.exists():
-            return str(ext)
-    raise FileNotFoundError(f"Extension not found in {_HERE}")
+    ext = _HERE / "bhttp.duckdb_extension"
+    if ext.exists():
+        return str(ext)
+    raise FileNotFoundError(f"Extension not found at {ext}")
 
 
 def setup(con):

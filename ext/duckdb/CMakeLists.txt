@@ -130,7 +130,16 @@ target_include_directories(${EXTENSION_NAME} PRIVATE
 target_link_libraries(${EXTENSION_NAME} PRIVATE ${BHTTP_LIBS})
 bhttp_platform_setup(${EXTENSION_NAME})
 
-install(TARGETS ${EXTENSION_NAME} LIBRARY DESTINATION blobhttp_duckdb/)
+# Append DuckDB extension metadata so DuckDB 1.5+ accepts the file
+add_custom_command(TARGET ${EXTENSION_NAME} POST_BUILD
+    COMMAND ${Python3_EXECUTABLE}
+        "${ROOT}/duckdb_ext/append_metadata.py"
+        "$<TARGET_FILE:${EXTENSION_NAME}>"
+        "$<TARGET_FILE_DIR:${EXTENSION_NAME}>/${EXTENSION_NAME}.duckdb_extension"
+    COMMENT "Appending DuckDB extension metadata")
+
+install(FILES "$<TARGET_FILE_DIR:${EXTENSION_NAME}>/${EXTENSION_NAME}.duckdb_extension"
+    DESTINATION blobhttp_duckdb/)
 
 # Bundle SQL macros that depend on other extensions (llm_adapt, llm_complete).
 # These can't be embedded in the C extension because they reference functions
