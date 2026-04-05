@@ -1131,6 +1131,20 @@ duckdb -unsigned -cmd "LOAD 'build/release/bhttp.duckdb_extension';" -c "
 "
 ```
 
+
+## Acknowledgements
+
+HTTP client functionality uses [CPR](https://github.com/libcpr/cpr)
+(C++ Requests), a C++ wrapper around libcurl. Distributed under the MIT license.
+
+JSON processing uses [nlohmann/json](https://github.com/nlohmann/json)
+(Lohmann, 2022) and [jsoncons](https://github.com/danielaparker/jsoncons)
+(Parker), both distributed under the MIT license.
+
+The browser extraction subsystem uses [Playwright](https://playwright.dev/)
+for CDP-based browser automation and [mitmproxy](https://mitmproxy.org/)
+for HTTP interception.
+
 ## License
 
 MIT
