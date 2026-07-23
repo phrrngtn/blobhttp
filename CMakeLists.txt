@@ -61,20 +61,6 @@ set(BHTTP_LIBS nlohmann_json::nlohmann_json cpr::cpr jsoncons)
 set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 set(CMAKE_C_VISIBILITY_PRESET hidden)
 set(VISIBILITY_INLINES_HIDDEN ON)
-set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -s")
-set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -s")
-
-# On macOS with Homebrew, ensure linker can find Homebrew libraries (e.g. libidn2)
-if(APPLE)
-  execute_process(
-    COMMAND brew --prefix
-    OUTPUT_VARIABLE HOMEBREW_PREFIX
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-    ERROR_QUIET)
-  if(HOMEBREW_PREFIX)
-    link_directories(${HOMEBREW_PREFIX}/lib)
-  endif()
-endif()
 
 # Helper: link SSPI on Windows for SPNEGO
 function(bhttp_platform_setup target)
@@ -145,10 +131,7 @@ if(BUILD_DUCKDB_EXTENSION)
   target_link_libraries(${EXTENSION_NAME} PRIVATE ${BHTTP_LIBS})
   bhttp_platform_setup(${EXTENSION_NAME})
 
-  # Emit the loadable, platform-stamped .duckdb_extension in-CMake (no hand-rolled
-  # Makefile/append step): a plain `cmake --build` yields build/<name>.duckdb_extension.
-  # append_metadata.py derives the DuckDB platform tag from the *build* machine, so
-  # native builds on any arch (osx_arm64 / linux_amd64 / …) stamp correctly.
+  # Emit the loadable, platform-stamped .duckdb_extension directly (no manual append step).
   if(NOT DUCKDB_WASM_EXTENSION)
     add_custom_command(TARGET ${EXTENSION_NAME} POST_BUILD
       COMMAND ${Python3_EXECUTABLE}
