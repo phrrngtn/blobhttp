@@ -144,6 +144,19 @@ if(BUILD_DUCKDB_EXTENSION)
     ${BHTTP_INCLUDES} ${DUCKDB_CAPI_INCLUDE} duckdb_ext/src ${CMAKE_BINARY_DIR})
   target_link_libraries(${EXTENSION_NAME} PRIVATE ${BHTTP_LIBS})
   bhttp_platform_setup(${EXTENSION_NAME})
+
+  # Emit the loadable, platform-stamped .duckdb_extension in-CMake (no hand-rolled
+  # Makefile/append step): a plain `cmake --build` yields build/<name>.duckdb_extension.
+  # append_metadata.py derives the DuckDB platform tag from the *build* machine, so
+  # native builds on any arch (osx_arm64 / linux_amd64 / …) stamp correctly.
+  if(NOT DUCKDB_WASM_EXTENSION)
+    add_custom_command(TARGET ${EXTENSION_NAME} POST_BUILD
+      COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/duckdb_ext/append_metadata.py
+        $<TARGET_FILE:${EXTENSION_NAME}>
+        $<TARGET_FILE_DIR:${EXTENSION_NAME}>/${EXTENSION_NAME}.duckdb_extension
+      COMMENT "Appending DuckDB extension metadata -> ${EXTENSION_NAME}.duckdb_extension")
+  endif()
 endif()
 
 # ── SQLite extension ────────────────────────────────────────────────
