@@ -8,6 +8,14 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # since extensions are shared libraries.
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+# MSVC: force ONE C runtime (/MD dynamic, matching the DuckDB/SQLite hosts and vcpkg's
+# x64-windows triplet) across our targets AND the fetched static deps (cpr/curl/zlib),
+# else objects mix /MT and /MD -> LNK2038 RuntimeLibrary mismatch -> LNK1169. Must be set
+# before FetchContent_MakeAvailable so the subprojects inherit it (CMP0091 NEW on cmake>=3.15).
+if(MSVC)
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")
+endif()
+
 include(FetchContent)
 
 # ── nlohmann/json ────────────────────────────────────────────────────
