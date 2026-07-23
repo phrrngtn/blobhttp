@@ -24,7 +24,7 @@ configure: venv platform extension_version
 
 # Override the upstream venv target — uv sync manages the virtualenv
 venv:
-	uv sync --python 3.12
+	uv sync --python 3.12 --all-extras
 	@mkdir -p configure/venv
 
 # Override check_configure — no configure/venv needed with uv
