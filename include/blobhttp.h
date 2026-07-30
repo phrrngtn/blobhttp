@@ -194,6 +194,28 @@ char *bh_llm_complete(const char *request_json);
 char *bh_llm_adapt(const char *request_json);
 
 /* ================================================================== *
+ *  SSO: Kerberos ticket -> JWT                                       *
+ * ================================================================== *
+ *
+ * Exchanges the ambient Kerberos credential for a JWT at an OIDC provider:
+ * discovery, then the authorization endpoint with a SPNEGO token, then the
+ * token endpoint. No password is stored or prompted for — the only secret is
+ * the one already in the ticket cache.
+ *
+ * Keys: issuer (required), client_id (required), client_secret, redirect_uri
+ * (default http://localhost/cb), scope (default "openid"), http_config — the
+ * same scoped config object as bh_batch_new, so an issuer behind a private CA
+ * or a proxy needs no separate plumbing.
+ *
+ * Returns the provider's token response verbatim: {"access_token": "<jwt>",
+ * "expires_in": …, "token_type": …, …}. Malloc'd; free with bh_free.
+ *
+ * blobsso does this same exchange for httpfs inside DuckDB. This exists
+ * because SQLite and Python cannot reach a DuckDB extension.
+ */
+char *bh_sso_jwt(const char *request_json);
+
+/* ================================================================== *
  *  Diagnostics and auth                                              *
  * ================================================================== */
 

@@ -614,7 +614,7 @@ pub fn build(b: *std.Build) void {
     const core = base(b, target, optimize);
     addCore(b, core, deps);
     core.addCSourceFiles(.{
-        .files = &.{ "src/blobhttp_core.cpp", "src/blobhttp_llm.cpp" },
+        .files = &.{ "src/blobhttp_core.cpp", "src/blobhttp_llm.cpp", "src/blobhttp_oidc.cpp" },
         .flags = cxx_flags,
     });
 
@@ -628,6 +628,7 @@ pub fn build(b: *std.Build) void {
         .files = &.{
             "src/blobhttp_core.cpp",
             "src/blobhttp_llm.cpp",
+            "src/blobhttp_oidc.cpp",
             "duckdb_ext/src/bhttp_ext.cpp",
             "duckdb_ext/src/bhttp_functions.cpp",
             "duckdb_ext/src/bhttp_llm.cpp",
@@ -649,6 +650,7 @@ pub fn build(b: *std.Build) void {
         .files = &.{
             "src/blobhttp_core.cpp",
             "src/blobhttp_llm.cpp",
+            "src/blobhttp_oidc.cpp",
             "sqlite_ext/src/bhttp_sqlite.cpp",
         },
         .flags = cxx_flags,
@@ -696,7 +698,7 @@ pub fn build(b: *std.Build) void {
     });
     addCore(b, t.root_module, deps);
     t.root_module.addCSourceFiles(.{
-        .files = &.{ "src/blobhttp_core.cpp", "src/blobhttp_llm.cpp" },
+        .files = &.{ "src/blobhttp_core.cpp", "src/blobhttp_llm.cpp", "src/blobhttp_oidc.cpp" },
         .flags = cxx_flags,
     });
     t.root_module.addCSourceFile(.{
