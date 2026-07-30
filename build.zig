@@ -466,7 +466,32 @@ fn addCore(b: *std.Build, mod: *std.Build.Module, d: Deps) void {
 /// was generated once by curl's own CMake with the flags in
 /// third_party/curl_config/README.md, and committed — machine-produced config,
 /// but no CMake at build time and `-Dtarget=` still works.
+/// The directory name holding this target's generated configs.
+///
+/// curl's HAVE_* entries are real compile-and-link probes, so they genuinely
+/// differ: Linux has HAVE_EVENTFD and HAVE_GETHOSTBYNAME_R_6, macOS has
+/// HAVE_MACH_ABSOLUTE_TIME, and they disagree even on HAVE_FSETXATTR_5 versus
+/// _6 — a difference that would be a silent ABI mismatch if hand-derived.
+///
+/// An unconfigured target fails here rather than at some confusing include,
+/// with the fix in the message. tools/gen_curl_config.sh generates a new one;
+/// run it on the target platform.
+fn configDir(target: std.Target) []const u8 {
+    return switch (target.os.tag) {
+        .macos => switch (target.cpu.arch) {
+            .aarch64 => "macos_arm64",
+            else => @panic("no committed curl config for this macOS arch — see tools/gen_curl_config.sh"),
+        },
+        .linux => switch (target.cpu.arch) {
+            .x86_64 => "linux_x86_64",
+            else => @panic("no committed curl config for this Linux arch — see tools/gen_curl_config.sh"),
+        },
+        else => @panic("no committed curl config for this OS — see tools/gen_curl_config.sh"),
+    };
+}
+
 fn addCurl(b: *std.Build, mod: *std.Build.Module, d: Deps) void {
+    const cfg = configDir(mod.resolved_target.?.result);
     const sc = d.static_curl orelse {
         // OPENSSL_BACKEND_USED is deliberately not defined: it only enables
         // cpr's SSL_CTX callback, and nothing here sets one.
@@ -475,15 +500,28 @@ fn addCurl(b: *std.Build, mod: *std.Build.Module, d: Deps) void {
     };
     mod.addIncludePath(sc.curl.path("include"));
     mod.addIncludePath(sc.curl.path("lib"));
-    mod.addIncludePath(b.path("third_party/curl_config/macos_arm64"));
+    mod.addIncludePath(b.path(b.fmt("third_party/curl_config/{s}", .{cfg})));
     mod.addIncludePath(sc.mbedtls.path("include"));
     mod.addIncludePath(sc.nghttp2.path("lib/includes"));
+    mod.addIncludePath(b.path(b.fmt("third_party/nghttp2_config/{s}", .{cfg})));
+    // nghttp2ver.h is version numbers only and is the same everywhere, so it
+    // sits above the per-platform directories rather than being duplicated.
     mod.addIncludePath(b.path("third_party/nghttp2_config"));
     mod.addIncludePath(sc.zlib.path("."));
     mod.addIncludePath(b.path("third_party/zlib_config"));
 
     mod.addCMacro("BUILDING_LIBCURL", "1");
     mod.addCMacro("NGHTTP2_STATICLIB", "1");
+
+    // Not everything curl's build needs lives in curl_config.h. Its CMakeLists
+    // sets -D_GNU_SOURCE as a compiler flag on Linux ("Required for
+    // sendmmsg()"), and without it glibc hides struct addrinfo and EAI_* behind
+    // their feature-test guards — 80 errors, none of which mention the cause.
+    // Capturing the generated header is necessary but not sufficient; the flags
+    // have to come across too.
+    if (mod.resolved_target.?.result.os.tag == .linux) {
+        mod.addCMacro("_GNU_SOURCE", "1");
+    }
     mod.addCMacro("CURL_STATICLIB", "1");
     mod.addCMacro("HAVE_CONFIG_H", "1");
 

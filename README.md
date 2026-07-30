@@ -1032,7 +1032,7 @@ zig build -Dstatic-curl=true   # compile curl, mbedtls, nghttp2 and zlib in
 | TLS | whatever it was built with | mbedTLS 3.6.2, always |
 | HTTP/2, compression | if the host has them | nghttp2 + zlib, always |
 | link-time deps | `libcurl.4` | none beyond the OS |
-| cross-compiles | no | yes, given a config for the target |
+| cross-compiles | no — needs a sysroot for the target's libcurl | yes: macOS arm64 and Linux x86_64 configs are committed |
 | needs CMake | never | once per platform, to regenerate configs |
 | artifact | ~34 MB | ~44 MB |
 

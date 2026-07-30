@@ -100,7 +100,35 @@ Both need their own generated headers, captured the same way:
 
 ## Platforms
 
-Only `macos_arm64` so far. Each target needs its own, generated on (or
-cross-configured for) that platform, because the `HAVE_*` probes really do
-differ. Cross-compiling to a target without a committed config will fail at the
-include, which is the right failure — loud, and at build time.
+`macos_arm64` and `linux_x86_64`. Each target needs its own, generated on that
+platform, because the `HAVE_*` probes are real compile-and-link tests and they
+genuinely differ:
+
+    macOS only:   HAVE_MACH_ABSOLUTE_TIME, HAVE_BUILTIN_AVAILABLE
+    Linux only:   HAVE_EVENTFD, HAVE_GETHOSTBYNAME_R_6, HAVE_LINUX_TCP_H,
+                  HAVE_GLIBC_STRERROR_R, CURL_CA_PATH
+    disagree on:  HAVE_FSETXATTR_5 (Linux) vs HAVE_FSETXATTR_6 (macOS)
+
+That last one is the argument against hand-deriving in miniature: the two
+platforms take a different *arity* for the same function, and guessing wrong is
+a silent ABI mismatch rather than a compile error.
+
+`build.zig`'s `configDir()` selects by target and panics with a pointer to
+`tools/gen_curl_config.sh` for anything unconfigured — loud, and at build time.
+
+nghttp2's `config.h` is also per-platform. Its `nghttp2ver.h` and zlib's
+`zconf.h` are identical across both, so they sit above the platform
+directories rather than being duplicated.
+
+## The config header is necessary but not sufficient
+
+curl's CMake also sets **compiler flags** that never reach `curl_config.h`.
+The one that matters here: `-D_GNU_SOURCE` on Linux ("Required for
+sendmmsg()"). Without it glibc hides `struct addrinfo` and the `EAI_*` constants
+behind their feature-test guards, and the build fails with 80 errors, none of
+which name the cause. `addCurl()` sets it for Linux targets.
+
+If you bump curl, check `flags.make` in the generated build tree for any new
+`-D` that is not in the config header:
+
+    grep -o "\-D[A-Z_]*" b-curl/lib/CMakeFiles/libcurl_static.dir/flags.make | sort -u
