@@ -418,6 +418,7 @@ const StaticCurl = struct {
 const Deps = struct {
     jsoncons: *std.Build.Dependency,
     cpr: *std.Build.Dependency,
+    spnego: *std.Build.Dependency,
     /// Present only when -Dstatic-curl=true. Lazy, so an ordinary build does
     /// not fetch curl, mbedtls, nghttp2 and zlib to leave them unused.
     static_curl: ?StaticCurl,
@@ -440,7 +441,15 @@ fn addCore(b: *std.Build, mod: *std.Build.Module, d: Deps) void {
         .files = cpr_sources,
         .flags = cxx_flags,
     });
-    mod.addCSourceFile(.{ .file = b.path("src/negotiate_auth.cpp"), .flags = cxx_flags });
+    // The SPNEGO atom, upstream rather than copied. src/negotiate_auth.cpp used
+    // to be this file with the namespace renamed, and the two had already
+    // drifted: upstream grew an `allow_insecure` escape hatch for transports
+    // that are already encrypted (Tailscale, WireGuard) and the copy never got
+    // it. blobsso consumes the same repo, so there is now one implementation
+    // rather than two that agree by accident.
+    mod.addIncludePath(d.spnego.path("."));
+    mod.addIncludePath(d.spnego.path("third_party/json/single_include"));
+    mod.addCSourceFile(.{ .file = d.spnego.path("spnego_token.cpp"), .flags = cxx_flags });
 
     addCurl(b, mod, d);
     mod.link_libcpp = true;
@@ -583,6 +592,7 @@ pub fn build(b: *std.Build) void {
     const deps: Deps = .{
         .jsoncons = b.dependency("jsoncons", .{}),
         .cpr = b.dependency("cpr", .{}),
+        .spnego = b.dependency("spnego_token", .{}),
         .static_curl = if (!static_curl) null else .{
             // lazyDependency returns null on the first run, when the package
             // has yet to be fetched; the build re-runs itself afterwards.

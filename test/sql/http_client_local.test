@@ -11,7 +11,7 @@ require bhttp
 statement error
 SELECT bh_negotiate_auth_header('http://example.com');
 ----
-Negotiate authentication requires HTTPS
+Refusing to mint a Negotiate token for a plain-http:// URL
 
 statement error
 SELECT bh_negotiate_auth_header('not-a-url');
@@ -21,7 +21,7 @@ Invalid URL
 statement error
 SELECT bh_negotiate_auth_header_json('http://example.com');
 ----
-Negotiate authentication requires HTTPS
+Refusing to mint a Negotiate token for a plain-http:// URL
 
 statement error
 SELECT bh_negotiate_auth_header_json('not-a-url');

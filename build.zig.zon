@@ -33,6 +33,10 @@
             .hash = "N-V-__8AAB0eQwD-0MdOEBmz7intriBReIsIDNlukNVoNu6o",
             .lazy = true,
         },
+        .spnego_token = .{
+            .url = "git+https://github.com/phrrngtn/spnego-token#6113e8f6682c5b3c3182e409b0c6e362b56c47d9",
+            .hash = "N-V-__8AAISXAAABbmIa4eqUTziSsPF4P9uxKpXKhZkeP1Hj",
+        },
     },
     .paths = .{ "build.zig", "build.zig.zon", "src", "include", "third_party" },
 }

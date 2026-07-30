@@ -17,7 +17,7 @@
 #include "blobhttp_internal.hpp"
 
 #include "http_config.hpp"
-#include "negotiate_auth.hpp"
+#include <spnego_token.hpp>
 #include "rate_limiter.hpp"
 
 #include <algorithm>
@@ -264,7 +264,7 @@ BuildSession(const Pending &req, const HttpConfig &config) {
 
     const bool has_auth = headers.find("Authorization") != headers.end();
     if (config.auth_type == "negotiate" && !has_auth) {
-        headers["Authorization"] = "Negotiate " + GenerateNegotiateToken(req.url).token;
+        headers["Authorization"] = "Negotiate " + spnego::GenerateTokenForUrl(req.url).token;
     } else if (config.auth_type == "bearer" && !config.bearer_token.empty() && !has_auth) {
         if (config.bearer_token_expires_at > 0) {
             auto now = std::chrono::duration_cast<std::chrono::seconds>(
@@ -748,7 +748,7 @@ char *bh_negotiate_auth_header(const char *url) {
         return nullptr;
     }
     try {
-        return DupString("Negotiate " + GenerateNegotiateToken(url).token);
+        return DupString("Negotiate " + spnego::GenerateTokenForUrl(url).token);
     } catch (const std::exception &e) {
         SetError(e.what());
         return nullptr;
@@ -758,7 +758,7 @@ char *bh_negotiate_auth_header(const char *url) {
 int bh_negotiate_available(void) {
     ClearError();
     try {
-        return NegotiateAuthIsAvailable() ? 1 : 0;
+        return spnego::IsAvailable() ? 1 : 0;
     } catch (const std::exception &e) {
         SetError(e.what());
         return 0;
@@ -772,7 +772,7 @@ char *bh_negotiate_auth_header_json(const char *url) {
         return nullptr;
     }
     try {
-        auto result = GenerateNegotiateToken(url);
+        auto result = spnego::GenerateTokenForUrl(url);
         // Field order and names match what the DuckDB scalar emitted before
         // the extraction — this JSON is user-visible via
         // bh_negotiate_auth_header_json().
