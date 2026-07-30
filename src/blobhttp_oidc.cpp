@@ -28,7 +28,10 @@
 
 #include "http_config.hpp"
 
+#include <chrono>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 
 #include <cpr/cpr.h>
 #include <nlohmann/json.hpp>
@@ -212,6 +215,98 @@ nlohmann::json SsoJwt(const nlohmann::json &req) {
     auto scope = req.value("scope", std::string{"openid"});
     auto code = AuthorizeWithSpnego(ep, client_id, redirect_uri, scope, config);
     return ExchangeCode(ep, code, client_id, req.value("client_secret", ""), redirect_uri, config);
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Vault authentication by SSO
+// ─────────────────────────────────────────────────────────────────────
+
+namespace {
+
+struct VaultTokenEntry {
+    std::string token;
+    std::chrono::steady_clock::time_point expires_at;
+};
+
+/// Exchange a JWT for a vault token at auth/jwt/login.
+///
+/// Cached until shortly before the lease expires, keyed by the things that
+/// determine which token you get. Without this a scan of 2,000 rows would do
+/// 2,000 logins — and each login is itself a Kerberos exchange plus two OIDC
+/// round-trips, so it would be far worse than the secret fetch it precedes.
+std::string VaultTokenFromJwt(const HttpConfig &config) {
+    const std::string key = config.vault_addr + "|" + config.vault_jwt_role + "|" +
+                            config.oidc_issuer + "|" + config.oidc_client_id;
+
+    static std::mutex mu;
+    static std::unordered_map<std::string, VaultTokenEntry> cache;
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        auto it = cache.find(key);
+        if (it != cache.end() && std::chrono::steady_clock::now() < it->second.expires_at) {
+            return it->second.token;
+        }
+    }
+
+    if (config.oidc_issuer.empty() || config.oidc_client_id.empty()) {
+        throw std::runtime_error(
+            "vault_auth_method=\"jwt\" needs oidc_issuer and oidc_client_id in the "
+            "same bh_http_config scope");
+    }
+    if (config.vault_jwt_role.empty()) {
+        throw std::runtime_error("vault_auth_method=\"jwt\" needs vault_jwt_role");
+    }
+
+    nlohmann::json req;
+    req["issuer"] = config.oidc_issuer;
+    req["client_id"] = config.oidc_client_id;
+    if (!config.oidc_client_secret.empty()) req["client_secret"] = config.oidc_client_secret;
+    // The issuer's own scope config (CA bundle, proxy) is resolved inside
+    // SsoJwt from the entries carried here.
+    if (!config.ca_bundle.empty()) {
+        nlohmann::json inner;
+        inner["ca_bundle"] = config.ca_bundle;
+        req["http_config"] = {{config.oidc_issuer, inner.dump()}};
+    }
+    auto jwt = SsoJwt(req).value("access_token", "");
+    if (jwt.empty()) throw std::runtime_error("SSO returned no access_token");
+
+    nlohmann::json login;
+    login["role"] = config.vault_jwt_role;
+    login["jwt"] = jwt;
+    auto login_body = login.dump();
+
+    cpr::Session s;
+    ShareConnections(s);
+    s.SetUrl(cpr::Url{config.vault_addr + "/v1/auth/jwt/login"});
+    s.SetTimeout(cpr::Timeout{config.timeout * 1000});
+    s.SetHeader(cpr::Header{{"Content-Type", "application/json"}});
+    s.SetBody(cpr::Body{login_body});
+    auto r = s.Post();
+    if (r.status_code != 200) {
+        throw std::runtime_error("vault auth/jwt/login failed (HTTP " +
+                                 std::to_string(r.status_code) + "): " + r.text.substr(0, 300));
+    }
+    auto j = nlohmann::json::parse(r.text);
+    auto token = j["auth"].value("client_token", std::string{});
+    if (token.empty()) throw std::runtime_error("vault login returned no client_token");
+    int lease = j["auth"].value("lease_duration", 3600);
+
+    {
+        // Re-login a minute early rather than discovering expiry mid-scan.
+        auto ttl = std::chrono::seconds(lease > 120 ? lease - 60 : lease / 2);
+        std::lock_guard<std::mutex> lock(mu);
+        cache[key] = {token, std::chrono::steady_clock::now() + ttl};
+    }
+    return token;
+}
+
+} // namespace
+
+void ResolveVaultAuth(HttpConfig &config) {
+    if (config.vault_auth_method != "jwt") return;   // "token" is the default
+    if (config.vault_path.empty()) return;           // nothing to fetch, no need to log in
+    config.vault_token = VaultTokenFromJwt(config);
 }
 
 } // namespace blobhttp

@@ -595,7 +595,36 @@ local gateway like [Bifrost](https://github.com/maximhq/bifrost) translates
 this to 20+ LLM providers (Anthropic, Google, Mistral, etc.), so the SQL
 never contains vendor-specific logic.
 
-### Architecture
+#### Secrets without a stored token
+
+By default `vault_token` is a long-lived token sitting in plain text in
+`bh_http_config` — acceptable against a loopback dev server, a liability for
+anything shared. Setting `vault_auth_method` to `jwt` removes it entirely:
+
+```sql
+SET VARIABLE bh_http_config = bh_http_config_set(
+  'https://api.example.com/', json_object(
+    'auth_type',         'bearer',
+    'vault_auth_method', 'jwt',           -- no vault_token anywhere
+    'vault_addr',        'http://vault.internal:8200',
+    'vault_path',        'secret/blobapi/example',
+    'vault_jwt_role',    'blobhttp',
+    'oidc_issuer',       'https://keycloak.internal/realms/lake',
+    'oidc_client_id',    'minio'));
+```
+
+The chain, all inside the request path:
+
+    ambient Kerberos ticket -> SPNEGO -> OIDC -> JWT
+      -> vault auth/jwt/login -> short-lived token (cached for its lease,
+                                                    renewed a minute early)
+      -> read the secret -> injected as the bearer token
+
+Nothing is stored and nothing is prompted for; the only credential is the one
+already in the ticket cache. `bh_sso_jwt()` exposes the JWT step on its own if
+you want the token for something else.
+
+## Architecture
 
 ```
 Domain macro                         llm_adapter table

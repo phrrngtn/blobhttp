@@ -42,6 +42,15 @@ std::string ExtractHost(const std::string &url);
 void ShareConnections(cpr::Session &session);
 Pairs ParseJsonObject(const char *json);
 
+// ── Vault authentication ─────────────────────────────────────────────
+//
+// Fills in config.vault_token when vault_auth_method is "jwt", so that
+// ResolveVaultSecrets sees a token either way and knows nothing about how it
+// was obtained. Call immediately before it. No-op for the default "token"
+// method. Implemented in blobhttp_oidc.cpp, which is where the OIDC exchange
+// lives.
+void ResolveVaultAuth(HttpConfig &config);
+
 // ── LLM completion ───────────────────────────────────────────────────
 //
 // Stats accumulated across every HTTP round-trip in one logical LLM call: a

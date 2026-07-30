@@ -528,6 +528,7 @@ int bh_batch_perform(bh_batch *b) {
         for (size_t i = 0; i < b->pending.size(); i++) {
             auto &req = b->pending[i];
             req.config = ResolveConfig(req.url, b->config_entries);
+            ResolveVaultAuth(req.config);
             ResolveVaultSecrets(req.config, req.params);
             req.host = ExtractHost(req.url);
             req.cpr_method = ToCprMethod(req.method);

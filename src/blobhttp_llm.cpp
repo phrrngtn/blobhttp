@@ -297,6 +297,7 @@ char *bh_llm_complete(const char *request_json) {
 
         auto config = ResolveConfig(url, JsonObjectToPairs(cfg, "http_config"));
         Pairs params;
+        ResolveVaultAuth(config);
         ResolveVaultSecrets(config, params);
 
         auto result = LlmCompleteLoop(url, std::move(body), config,
@@ -338,6 +339,7 @@ char *bh_llm_adapt(const char *request_json) {
 
         auto config = ResolveConfig(endpoint, JsonObjectToPairs(cfg, "http_config"));
         Pairs params;
+        ResolveVaultAuth(config);
         ResolveVaultSecrets(config, params);
 
         nlohmann::json body = {

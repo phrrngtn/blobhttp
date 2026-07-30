@@ -59,6 +59,21 @@ struct HttpConfig {
 	std::string vault_param_name;      // for auth_type=query_param: query param name for the key
 	int vault_kv_version = 2;          // KV secrets engine version (1 or 2)
 
+	// How to authenticate TO vault/OpenBao.
+	//
+	// "token"  (default) — vault_token above is a long-lived token, in plain
+	//                      text in bh_http_config. Fine for a loopback dev
+	//                      server; a liability for anything shared.
+	// "jwt"              — no stored secret at all. The ambient Kerberos
+	//                      ticket is exchanged for a JWT at oidc_issuer, and
+	//                      that JWT is exchanged at vault's auth/jwt/login for
+	//                      a short-lived token, cached for its own lease.
+	std::string vault_auth_method = "token";
+	std::string vault_jwt_role;        // the OpenBao JWT role to log in as
+	std::string oidc_issuer;           // e.g. https://keycloak.example/realms/lake
+	std::string oidc_client_id;
+	std::string oidc_client_secret;
+
 	//! Apply values from a JSON config object, overwriting only fields that are present.
 	void MergeFrom(const nlohmann::json &j) {
 		if (j.contains("rate_limit") && j["rate_limit"].is_string()) {
@@ -121,6 +136,21 @@ struct HttpConfig {
 		}
 		if (j.contains("vault_kv_version") && j["vault_kv_version"].is_number()) {
 			vault_kv_version = j["vault_kv_version"].get<int>();
+		}
+		if (j.contains("vault_auth_method") && j["vault_auth_method"].is_string()) {
+			vault_auth_method = j["vault_auth_method"].get<std::string>();
+		}
+		if (j.contains("vault_jwt_role") && j["vault_jwt_role"].is_string()) {
+			vault_jwt_role = j["vault_jwt_role"].get<std::string>();
+		}
+		if (j.contains("oidc_issuer") && j["oidc_issuer"].is_string()) {
+			oidc_issuer = j["oidc_issuer"].get<std::string>();
+		}
+		if (j.contains("oidc_client_id") && j["oidc_client_id"].is_string()) {
+			oidc_client_id = j["oidc_client_id"].get<std::string>();
+		}
+		if (j.contains("oidc_client_secret") && j["oidc_client_secret"].is_string()) {
+			oidc_client_secret = j["oidc_client_secret"].get<std::string>();
 		}
 	}
 };
@@ -298,6 +328,9 @@ inline std::string FetchVaultSecret(const std::string &vault_addr,
 //! Modifies config in place — sets bearer_token or populates params.
 inline void ResolveVaultSecrets(HttpConfig &config,
                                  std::vector<std::pair<std::string, std::string>> &params) {
+	// vault_token may have been filled in by ResolveVaultAuth from an SSO
+	// exchange rather than read from config — see blobhttp_oidc.cpp. Either
+	// way, by here it is just a token.
 	if (config.vault_path.empty() || config.vault_token.empty()) {
 		return;
 	}
