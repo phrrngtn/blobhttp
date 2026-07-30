@@ -315,6 +315,70 @@ void RecordResponseStats(const cpr::Response &response, const std::string &host)
     }
 }
 
+
+/// Whether a byte range is well-formed UTF-8.
+///
+/// nlohmann refuses to serialise a string value that is not, and a JSON string
+/// genuinely cannot hold arbitrary bytes, so this decides between putting the
+/// body in as text and base64-encoding it.
+bool IsValidUtf8(const std::string &s) {
+    size_t i = 0;
+    while (i < s.size()) {
+        unsigned char c = static_cast<unsigned char>(s[i]);
+        size_t extra;
+        unsigned int cp;
+        if (c < 0x80) { i++; continue; }
+        else if ((c & 0xE0) == 0xC0) { extra = 1; cp = c & 0x1F; }
+        else if ((c & 0xF0) == 0xE0) { extra = 2; cp = c & 0x0F; }
+        else if ((c & 0xF8) == 0xF0) { extra = 3; cp = c & 0x07; }
+        else return false;
+
+        if (i + extra >= s.size()) return false;
+        for (size_t k = 1; k <= extra; k++) {
+            unsigned char cc = static_cast<unsigned char>(s[i + k]);
+            if ((cc & 0xC0) != 0x80) return false;
+            cp = (cp << 6) | (cc & 0x3F);
+        }
+        // Reject overlong encodings, surrogates and out-of-range code points —
+        // all of which some decoders accept and others reject, which is
+        // exactly the ambiguity worth not shipping.
+        if (extra == 1 && cp < 0x80) return false;
+        if (extra == 2 && cp < 0x800) return false;
+        if (extra == 3 && cp < 0x10000) return false;
+        if (cp > 0x10FFFF) return false;
+        if (cp >= 0xD800 && cp <= 0xDFFF) return false;
+        i += extra + 1;
+    }
+    return true;
+}
+
+std::string Base64Encode(const std::string &in) {
+    static const char *T = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve(((in.size() + 2) / 3) * 4);
+    size_t i = 0;
+    while (i + 2 < in.size()) {
+        unsigned v = (static_cast<unsigned char>(in[i]) << 16) |
+                     (static_cast<unsigned char>(in[i + 1]) << 8) |
+                     static_cast<unsigned char>(in[i + 2]);
+        out += T[(v >> 18) & 63];
+        out += T[(v >> 12) & 63];
+        out += T[(v >> 6) & 63];
+        out += T[v & 63];
+        i += 3;
+    }
+    if (i < in.size()) {
+        unsigned v = static_cast<unsigned char>(in[i]) << 16;
+        bool two = (i + 1 < in.size());
+        if (two) v |= static_cast<unsigned char>(in[i + 1]) << 8;
+        out += T[(v >> 18) & 63];
+        out += T[(v >> 12) & 63];
+        out += two ? T[(v >> 6) & 63] : '=';
+        out += '=';
+    }
+    return out;
+}
+
 nlohmann::json PairsToJson(const Pairs &pairs) {
     nlohmann::json obj = nlohmann::json::object();
     for (auto &[k, v] : pairs) obj[k] = v;
@@ -556,15 +620,24 @@ char *bh_result_json(const bh_batch *b, size_t i) {
         j["response_status_code"] = r->status_code;
         j["response_status"] = r->status_line;
         j["response_headers"] = PairsToJson(r->response_headers);
-        j["response_body"] = r->body;
+
+        // A JSON string cannot hold arbitrary bytes. A UTF-8 body goes in as
+        // text, byte-identical to what this always produced; anything else is
+        // base64 with an explicit marker, rather than the hard failure both
+        // hosts used to give ("invalid UTF-8 byte at index N") for any binary
+        // response. Callers wanting the bytes unconditionally should use
+        // bh_result_body, which has no such constraint.
+        if (IsValidUtf8(r->body)) {
+            j["response_body"] = r->body;
+        } else {
+            j["response_body"] = Base64Encode(r->body);
+            j["response_body_encoding"] = "base64";
+        }
         j["response_url"] = r->response_url;
         j["elapsed"] = r->elapsed;
         j["redirect_count"] = r->redirect_count;
         return DupString(j.dump());
     } catch (const std::exception &e) {
-        // nlohmann rejects invalid UTF-8 in a string value, so a binary body
-        // lands here. Callers wanting the raw bytes should use
-        // bh_result_body, which has no such constraint.
         SetError(e.what());
         return nullptr;
     }
