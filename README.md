@@ -178,6 +178,7 @@ All scalar functions return a STRUCT with the same fields:
 | `response_url` | VARCHAR | Final URL after redirects |
 | `elapsed` | DOUBLE | Request duration in seconds |
 | `redirect_count` | INTEGER | Number of redirects followed |
+| `response_blob` | BLOB | The response body as raw bytes. Use this for anything not valid UTF-8 — `response_body` is a VARCHAR, so a binary payload makes every string operation on it return NULL. |
 
 ### Function parameters
 
@@ -977,6 +978,41 @@ the result to force evaluation:
 SELECT count(*) FROM (
     SELECT (bh_http_get(url)).response_status_code AS status FROM urls
 );
+```
+
+## Python
+
+The Python package binds the same C ABI (`include/blobhttp.h`) the two
+extensions use, through ctypes — so config resolution, Vault lookup, rate
+limiting and the LLM loop are one implementation shared by all three hosts.
+
+```python
+import blobhttp as bh
+
+c = bh.HttpClient()
+r = c.get("https://example.com")
+r["response_status_code"]        # 200
+r["response_body"]               # str  — lossy for a non-UTF-8 payload
+r["response_blob"]               # bytes — always exact
+r["response_headers"]["content-type"]
+```
+
+Responses are dicts with the same twelve fields as DuckDB's STRUCT.
+
+For many URLs, use the batch shape directly rather than looping — it is what
+the ABI is built around, and it fans out concurrently:
+
+```python
+results = bh.request_many([
+    {"method": "GET", "url": u} for u in urls
+], config={"https://api.example.com/": '{"rate_limit": "5/s"}'})
+```
+
+Chat completion with continuation and schema retry, previously DuckDB-only:
+
+```python
+out = bh.llm_complete(url, body, output_schema=schema)
+out["content"], out["stats"]["continuations"]
 ```
 
 ## Building
