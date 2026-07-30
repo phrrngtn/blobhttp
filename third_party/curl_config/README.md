@@ -45,7 +45,8 @@ cmake -S <curl> -B curlbuild \
   -DCURL_USE_MBEDTLS=ON -DCURL_USE_OPENSSL=OFF \
   -DCURL_USE_LIBSSH2=OFF -DCURL_USE_LIBSSH=OFF -DCURL_USE_LIBPSL=OFF \
   -DUSE_LIBIDN2=OFF -DCURL_USE_GSSAPI=OFF \
-  -DCURL_ZLIB=OFF -DCURL_BROTLI=OFF -DCURL_ZSTD=OFF -DUSE_NGHTTP2=OFF \
+  -DCURL_BROTLI=OFF -DCURL_ZSTD=OFF \
+  -DCURL_ZLIB=ON -DUSE_NGHTTP2=ON \
   -DCURL_DISABLE_LDAP=ON -DCURL_DISABLE_LDAPS=ON -DCURL_DISABLE_FTP=ON \
   -DCURL_DISABLE_TELNET=ON -DCURL_DISABLE_DICT=ON -DCURL_DISABLE_TFTP=ON \
   -DCURL_DISABLE_GOPHER=ON -DCURL_DISABLE_IMAP=ON -DCURL_DISABLE_POP3=ON \
@@ -54,7 +55,9 @@ cmake -S <curl> -B curlbuild \
   -DMBEDTLS_INCLUDE_DIRS=mbedinst/include \
   -DMBEDTLS_LIBRARY=mbedinst/lib/libmbedtls.a \
   -DMBEDX509_LIBRARY=mbedinst/lib/libmbedx509.a \
-  -DMBEDCRYPTO_LIBRARY=mbedinst/lib/libmbedcrypto.a
+  -DMBEDCRYPTO_LIBRARY=mbedinst/lib/libmbedcrypto.a \
+  -DNGHTTP2_INCLUDE_DIR=nginst/include -DNGHTTP2_LIBRARY=nginst/lib/libnghttp2.a \
+  -DZLIB_INCLUDE_DIR=zlinst/include -DZLIB_LIBRARY=zlinst/lib/libz.a
 
 cp curlbuild/lib/curl_config.h third_party/curl_config/<platform>/
 ```
@@ -62,8 +65,8 @@ cp curlbuild/lib/curl_config.h third_party/curl_config/<platform>/
 Confirm the summary curl prints matches what is intended:
 
     Protocols: http https ipfs ipns ws wss
-    Features:  alt-svc AsynchDNS HSTS HTTPS-proxy IPv6 Largefile SSL
-               threadsafe UnixSockets
+    Features:  alt-svc AsynchDNS HSTS HTTP2 HTTPS-proxy IPv6 Largefile libz
+               SSL threadsafe UnixSockets
     Enabled SSL backends: mbedTLS
 
 ## Feature choices
@@ -86,10 +89,14 @@ be static anyway.
 "ngtcp2 requires OpenSSL, wolfSSL or GnuTLS". mbedTLS cannot do it, so HTTP/3
 and matching DuckDB's TLS stack are mutually exclusive.
 
-**No HTTP/2 or zlib yet.** Both are worth adding — nghttp2 in particular, since
-multiplexing is what the batch fan-out wants — but each is another library to
-build and pin. Deliberately left for a follow-up rather than bundled into
-getting the static link working at all.
+**HTTP/2 and zlib are in.** nghttp2 because multiplexing is what the batch
+fan-out wants — verified negotiating `HTTP/2 200` against cloudflare.com — and
+zlib because most APIs serve compressed and it is small. zlib's `gz*.c` are
+omitted: that is the stdio gzFile API, which curl does not use.
+
+Both need their own generated headers, captured the same way:
+`nghttp2_config/config.h`, `nghttp2_config/nghttp2/nghttp2ver.h`,
+`zlib_config/zconf.h`.
 
 ## Platforms
 

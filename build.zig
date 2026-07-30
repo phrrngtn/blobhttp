@@ -237,6 +237,56 @@ const curl_sources: []const []const u8 = &.{
     "lib/vssh/wolfssh.c",
 };
 
+/// nghttp2, for HTTP/2 multiplexing.
+const nghttp2_sources: []const []const u8 = &.{
+    "lib/nghttp2_alpn.c",
+    "lib/nghttp2_buf.c",
+    "lib/nghttp2_callbacks.c",
+    "lib/nghttp2_debug.c",
+    "lib/nghttp2_extpri.c",
+    "lib/nghttp2_frame.c",
+    "lib/nghttp2_hd.c",
+    "lib/nghttp2_hd_huffman.c",
+    "lib/nghttp2_hd_huffman_data.c",
+    "lib/nghttp2_helper.c",
+    "lib/nghttp2_http.c",
+    "lib/nghttp2_map.c",
+    "lib/nghttp2_mem.c",
+    "lib/nghttp2_option.c",
+    "lib/nghttp2_outbound_item.c",
+    "lib/nghttp2_pq.c",
+    "lib/nghttp2_priority_spec.c",
+    "lib/nghttp2_queue.c",
+    "lib/nghttp2_ratelim.c",
+    "lib/nghttp2_rcbuf.c",
+    "lib/nghttp2_session.c",
+    "lib/nghttp2_stream.c",
+    "lib/nghttp2_submit.c",
+    "lib/nghttp2_time.c",
+    "lib/nghttp2_version.c",
+    "lib/sfparse.c",
+};
+
+/// zlib, for gzip/deflate Content-Encoding.
+///
+/// The gz*.c files are omitted: they are zlib's stdio-based gzFile API, which
+/// curl does not use — it drives deflate/inflate directly. They also want
+/// unistd.h, which zconf.h only exposes when its configure detected it, so
+/// including them would mean carrying a define to enable code nothing calls.
+const zlib_sources: []const []const u8 = &.{
+    "adler32.c",
+    "compress.c",
+    "crc32.c",
+    "deflate.c",
+    "infback.c",
+    "inffast.c",
+    "inflate.c",
+    "inftrees.c",
+    "trees.c",
+    "uncompr.c",
+    "zutil.c",
+};
+
 /// mbedtls, which ships a usable default config rather than generating one.
 const mbedtls_sources: []const []const u8 = &.{
     "library/aes.c",
@@ -363,6 +413,8 @@ const Deps = struct {
     cpr: *std.Build.Dependency,
     curl: *std.Build.Dependency,
     mbedtls: *std.Build.Dependency,
+    nghttp2: *std.Build.Dependency,
+    zlib: *std.Build.Dependency,
     /// Directory holding the generated sql_resources.hpp.
     sql_resources_dir: std.Build.LazyPath,
 };
@@ -409,8 +461,13 @@ fn addCurl(b: *std.Build, mod: *std.Build.Module, d: Deps) void {
     mod.addIncludePath(d.curl.path("lib"));
     mod.addIncludePath(b.path("third_party/curl_config/macos_arm64"));
     mod.addIncludePath(d.mbedtls.path("include"));
+    mod.addIncludePath(d.nghttp2.path("lib/includes"));
+    mod.addIncludePath(b.path("third_party/nghttp2_config"));
+    mod.addIncludePath(d.zlib.path("."));
+    mod.addIncludePath(b.path("third_party/zlib_config"));
 
     mod.addCMacro("BUILDING_LIBCURL", "1");
+    mod.addCMacro("NGHTTP2_STATICLIB", "1");
     mod.addCMacro("CURL_STATICLIB", "1");
     mod.addCMacro("HAVE_CONFIG_H", "1");
 
@@ -420,6 +477,12 @@ fn addCurl(b: *std.Build, mod: *std.Build.Module, d: Deps) void {
         .files = mbedtls_sources,
         .flags = mbedtls_flags,
     });
+    mod.addCSourceFiles(.{
+        .root = d.nghttp2.path("."),
+        .files = nghttp2_sources,
+        .flags = &.{ "-std=c11", "-DHAVE_CONFIG_H" },
+    });
+    mod.addCSourceFiles(.{ .root = d.zlib.path("."), .files = zlib_sources, .flags = curl_flags });
 }
 
 pub fn build(b: *std.Build) void {
@@ -462,6 +525,8 @@ pub fn build(b: *std.Build) void {
         .cpr = b.dependency("cpr", .{}),
         .curl = b.dependency("curl", .{}),
         .mbedtls = b.dependency("mbedtls", .{}),
+        .nghttp2 = b.dependency("nghttp2", .{}),
+        .zlib = b.dependency("zlib", .{}),
         .sql_resources_dir = sql_resources.dirname(),
     };
 
