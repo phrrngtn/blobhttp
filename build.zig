@@ -132,6 +132,17 @@ pub fn build(b: *std.Build) void {
         .sql_resources_dir = sql_resources.dirname(),
     };
 
+    // ── The core, as the cdylib's root ────────────────────────────────
+    //
+    // Its own module rather than being compiled into each extension, because
+    // the adapters still carry their own copies of AcquireRateLimit and
+    // RecordResponseStats — the very duplication the core exists to remove.
+    // Linking both into one artifact is a duplicate-symbol error, which is a
+    // usefully loud reminder that rewiring the adapters is the next step.
+    const core = base(b, target, optimize);
+    addCore(b, core, deps);
+    core.addCSourceFile(.{ .file = b.path("src/blobhttp_core.cpp"), .flags = cxx_flags });
+
     // ── DuckDB extension (C++ against the C API) ──────────────────────
     const duckdb_mod = base(b, target, optimize);
     addCore(b, duckdb_mod, deps);
@@ -157,12 +168,11 @@ pub fn build(b: *std.Build) void {
         .flags = cxx_flags,
     });
 
-    _ = blobzig.addHostExtensions(b, bz, .{
+    const artifacts = blobzig.addHostExtensions(b, bz, .{
         .name = "bhttp",
         .target = target,
         .optimize = optimize,
-        // No `core`: there is no C ABI to publish yet, so there is nothing for
-        // a cdylib to export. See the note at the top of this file.
+        .core = core,
         .duckdb_module = duckdb_mod,
         .sqlite_module = sqlite_mod,
         // libcurl is resolved from the host process, exactly as blobodbc
@@ -170,4 +180,20 @@ pub fn build(b: *std.Build) void {
         // documentation that this artifact is not self-contained.
         .allow_undefined = &.{"curl_"},
     });
+    artifacts.lib.?.installHeader(b.path("include/blobhttp.h"), "blobhttp.h");
+
+    // ── C test for the core ABI, with no host involved ────────────────
+    const t = b.addExecutable(.{
+        .name = "test_core_abi",
+        .root_module = base(b, target, optimize),
+    });
+    addCore(b, t.root_module, deps);
+    t.root_module.addCSourceFile(.{ .file = b.path("src/blobhttp_core.cpp"), .flags = cxx_flags });
+    t.root_module.addCSourceFile(.{
+        .file = b.path("test/test_core_abi.c"),
+        .flags = &.{"-std=c11"},
+    });
+    b.installArtifact(t);
+    b.step("test-core", "Exercise the C ABI directly (needs the network)")
+        .dependOn(&b.addRunArtifact(t).step);
 }
