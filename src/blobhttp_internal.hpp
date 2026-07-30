@@ -37,6 +37,9 @@ void RecordResponseStats(const cpr::Response &response, const std::string &host)
 
 // ── Helpers ──────────────────────────────────────────────────────────
 std::string ExtractHost(const std::string &url);
+
+/// Attach the process-wide connection/DNS/TLS-session cache to a session.
+void ShareConnections(cpr::Session &session);
 Pairs ParseJsonObject(const char *json);
 
 // ── LLM completion ───────────────────────────────────────────────────

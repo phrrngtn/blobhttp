@@ -97,6 +97,67 @@ GCRARateLimiter *GlobalLimiterSnapshot() {
 // ─────────────────────────────────────────────────────────────────────
 
 /// Hostname from a URL, for limiter keying and session pooling.
+
+// ─────────────────────────────────────────────────────────────────────
+// Shared connection cache
+//
+// libcurl keeps its connection cache inside the easy handle, and a fresh
+// cpr::Session is a fresh easy handle — so a session per request means a new
+// TCP connection, and over HTTPS a new TLS handshake, every single time.
+// Measured before this existed: ten requests to one host opened ten
+// connections.
+//
+// Both adapters used to declare an LRUPool<std::string, cpr::Session> for
+// this, and neither ever called it; the pools were dead code, so there was
+// never any reuse to lose.
+//
+// A CURLSH share handle is the right mechanism rather than pooling the
+// sessions themselves: sessions stay single-use (so no per-request state can
+// leak from one request into the next) while the connections, DNS results and
+// TLS sessions behind them are shared. It is also safe with the multi
+// interface, where pooled sessions would not be — the same easy handle cannot
+// be attached to two concurrent transfers.
+//
+// The lock callbacks are required because DuckDB calls scalar functions from
+// several threads; without them curl documents the share as unsafe.
+// ─────────────────────────────────────────────────────────────────────
+
+std::mutex &ShareMutex(curl_lock_data data) {
+    static std::mutex locks[CURL_LOCK_DATA_LAST];
+    return locks[data < CURL_LOCK_DATA_LAST ? data : 0];
+}
+
+void ShareLock(CURL *, curl_lock_data data, curl_lock_access, void *) {
+    ShareMutex(data).lock();
+}
+
+void ShareUnlock(CURL *, curl_lock_data data, void *) {
+    ShareMutex(data).unlock();
+}
+
+CURLSH *ConnectionShare() {
+    static CURLSH *share = [] {
+        CURLSH *sh = curl_share_init();
+        if (!sh) return static_cast<CURLSH *>(nullptr);
+        curl_share_setopt(sh, CURLSHOPT_LOCKFUNC, ShareLock);
+        curl_share_setopt(sh, CURLSHOPT_UNLOCKFUNC, ShareUnlock);
+        curl_share_setopt(sh, CURLSHOPT_SHARE, CURL_LOCK_DATA_CONNECT);
+        curl_share_setopt(sh, CURLSHOPT_SHARE, CURL_LOCK_DATA_DNS);
+        curl_share_setopt(sh, CURLSHOPT_SHARE, CURL_LOCK_DATA_SSL_SESSION);
+        return sh;
+    }();
+    return share;
+}
+
+/// Attach the process-wide connection cache to one session.
+void ShareConnections(cpr::Session &session) {
+    if (CURLSH *sh = ConnectionShare()) {
+        if (auto holder = session.GetCurlHolder()) {
+            curl_easy_setopt(holder->handle, CURLOPT_SHARE, sh);
+        }
+    }
+}
+
 std::string ExtractHost(const std::string &url) {
     auto pos = url.find("://");
     if (pos == std::string::npos) return url;
@@ -194,6 +255,7 @@ BuildSession(const Pending &req, const HttpConfig &config) {
     int timeout = (req.timeout_override >= 0) ? req.timeout_override : config.timeout;
 
     auto session = std::make_shared<cpr::Session>();
+    ShareConnections(*session);
     session->SetUrl(cpr::Url{req.url});
     session->SetTimeout(cpr::Timeout{timeout * 1000});
 
@@ -690,6 +752,16 @@ char *bh_negotiate_auth_header(const char *url) {
     } catch (const std::exception &e) {
         SetError(e.what());
         return nullptr;
+    }
+}
+
+int bh_negotiate_available(void) {
+    ClearError();
+    try {
+        return NegotiateAuthIsAvailable() ? 1 : 0;
+    } catch (const std::exception &e) {
+        SetError(e.what());
+        return 0;
     }
 }
 

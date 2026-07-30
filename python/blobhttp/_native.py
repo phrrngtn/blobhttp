@@ -94,6 +94,9 @@ for _name in ("bh_result_header_name", "bh_result_header_value"):
 # every call leaks.
 blobzig.returns_string(lib.bh_result_json, [_P, _SZ])
 blobzig.returns_string(lib.bh_rate_limit_stats_json, [])
+lib.bh_negotiate_available.argtypes = []
+lib.bh_negotiate_available.restype = ctypes.c_int
+
 blobzig.returns_string(lib.bh_negotiate_auth_header, [_S])
 blobzig.returns_string(lib.bh_negotiate_auth_header_json, [_S])
 blobzig.returns_string(lib.bh_llm_complete, [_S])

@@ -77,6 +77,7 @@ std::pair<nlohmann::json, double> PostChatCompletion(const std::string &url,
                                                      const HttpConfig &config,
                                                      const Pairs &extra_headers) {
     auto session = std::make_shared<cpr::Session>();
+    ShareConnections(*session);
     session->SetUrl(cpr::Url{url});
     session->SetTimeout(cpr::Timeout{config.timeout * 1000});
 

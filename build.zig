@@ -166,6 +166,11 @@ pub fn build(b: *std.Build) void {
     });
 
     // ── SQLite extension ──────────────────────────────────────────────
+    //
+    // bhttp_sqlite.cpp includes only blobhttp.h and nlohmann — no cpr, no rate
+    // limiter, no HttpConfig. The core sources still compile into this
+    // artifact (it needs an implementation to link against), but the adapter
+    // itself is now pure marshalling.
     const sqlite_mod = base(b, target, optimize);
     addCore(b, sqlite_mod, deps);
     sqlite_mod.addIncludePath(bz.namedLazyPath("sqlite_include"));

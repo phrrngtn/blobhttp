@@ -206,13 +206,9 @@ def negotiate_available() -> bool:
 
     GSS-API is dlopen'd, so this is a runtime question rather than a build one —
     and it is deliberately independent of whether the host's libcurl was built
-    --with-gssapi.
+    --with-gssapi. Makes no network request.
     """
-    try:
-        negotiate_token("https://example.com")
-        return True
-    except Error as e:
-        return "not available" not in str(e).lower()
+    return bool(lib.bh_negotiate_available())
 
 
 __all__ = [

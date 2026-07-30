@@ -210,8 +210,19 @@ char *bh_rate_limit_stats_json(void);
  */
 char *bh_negotiate_auth_header(const char *url);
 
-/* As above, but {"header": "...", "spn": "...", ...} for diagnostics. */
+/* As above, but {"token", "header", "url", "hostname", "spn", "provider",
+ * "library"} for diagnostics. */
 char *bh_negotiate_auth_header_json(const char *url);
+
+/*
+ * Whether a security provider (GSS-API or SSPI) is usable in this process.
+ *
+ * A runtime question, not a build one: GSS-API is dlopen'd, so the answer
+ * depends on what is installed rather than on how this was compiled — and it
+ * is deliberately independent of whether the host's libcurl was built
+ * --with-gssapi. Returns 1 or 0, and never makes a network request.
+ */
+int bh_negotiate_available(void);
 
 #ifdef __cplusplus
 }

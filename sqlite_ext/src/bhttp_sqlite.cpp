@@ -1,71 +1,17 @@
 #include <sqlite3ext.h>
 SQLITE_EXTENSION_INIT1
 
+// The C ABI is the whole dependency. This file no longer sees cpr, the rate
+// limiter, HttpConfig, the session pool or GSS-API — everything that is not
+// about SQLite's own dialect and value marshalling now lives in the core.
 #include "blobhttp.h"
-#include "blobhttp_internal.hpp"
-#include "http_config.hpp"
-#include "lru_pool.hpp"
-#include "negotiate_auth.hpp"
-#include "rate_limiter.hpp"
 
-#include <algorithm>
-#include <chrono>
 #include <cstring>
 #include <memory>
-#include <mutex>
 #include <string>
-#include <thread>
-#include <vector>
 
-#include <cpr/cpr.h>
 #include <nlohmann/json.hpp>
 
-#include <jsoncons/json.hpp>
-#include <jsoncons_ext/jmespath/jmespath.hpp>
-#include <jsoncons_ext/jsonschema/jsonschema.hpp>
-
-using namespace blobhttp;
-
-//! Parse a JSON object string into config entries.
-static std::vector<std::pair<std::string, std::string>>
-ParseConfigJson(const char *str, int len) {
-	std::vector<std::pair<std::string, std::string>> result;
-	if (!str || len <= 0) return result;
-	try {
-		auto j = nlohmann::json::parse(std::string(str, len));
-		if (j.is_object()) {
-			for (auto &[key, val] : j.items()) {
-				result.emplace_back(key, val.is_string() ? val.get<std::string>() : val.dump());
-			}
-		}
-	} catch (...) {}
-	return result;
-}
-
-//! Parse a JSON object string into header key-value pairs.
-static std::vector<std::pair<std::string, std::string>>
-ParseHeadersJson(const char *str, int len) {
-	std::vector<std::pair<std::string, std::string>> result;
-	if (!str || len <= 0) return result;
-	try {
-		auto j = nlohmann::json::parse(std::string(str, len));
-		if (j.is_object()) {
-			for (auto &[key, val] : j.items()) {
-				result.emplace_back(key, val.is_string() ? val.get<std::string>() : val.dump());
-			}
-		}
-	} catch (...) {}
-	return result;
-}
-
-/* ══════════════════════════════════════════════════════════════════════
- * One request, through the core
- *
- * Was ~100 lines building a cpr::Session, applying auth, rate-limiting and
- * shaping a JSON response — a near-copy of what duckdb_ext did. All of that
- * is include/blobhttp.h now. The batch is returned rather than just its JSON
- * so callers can also reach the raw bytes, which is what bh_http_body needs.
- * ══════════════════════════════════════════════════════════════════════ */
 
 static bh_batch *PerformOne(const std::string &method, const std::string &url,
                             const std::string &headers_json,
@@ -242,37 +188,25 @@ static void bhttp_body_func(sqlite3_context *ctx, int argc, sqlite3_value **argv
 
 
 static void negotiate_auth_header_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
-	const char *url = reinterpret_cast<const char *>(sqlite3_value_text(argv[0]));
-	if (!url) { sqlite3_result_null(ctx); return; }
-
-	try {
-		auto result = GenerateNegotiateToken(url);
-		std::string header = "Negotiate " + result.token;
-		sqlite3_result_text(ctx, header.c_str(), header.length(), SQLITE_TRANSIENT);
-	} catch (const std::exception &e) {
-		sqlite3_result_error(ctx, e.what(), -1);
+	auto url = ArgText(argc, argv, 0);
+	std::unique_ptr<char, void (*)(void *)> result(
+	    bh_negotiate_auth_header(url.c_str()), bh_free);
+	if (!result) {
+		sqlite3_result_error(ctx, bh_errmsg(), -1);
+		return;
 	}
+	sqlite3_result_text(ctx, result.get(), -1, SQLITE_TRANSIENT);
 }
 
 static void negotiate_auth_header_json_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
-	const char *url = reinterpret_cast<const char *>(sqlite3_value_text(argv[0]));
-	if (!url) { sqlite3_result_null(ctx); return; }
-
-	try {
-		auto result = GenerateNegotiateToken(url);
-		nlohmann::json j;
-		j["token"] = result.token;
-		j["header"] = "Negotiate " + result.token;
-		j["url"] = result.url;
-		j["hostname"] = result.hostname;
-		j["spn"] = result.spn;
-		j["provider"] = result.provider;
-		j["library"] = result.library;
-		auto json_str = j.dump();
-		sqlite3_result_text(ctx, json_str.c_str(), json_str.length(), SQLITE_TRANSIENT);
-	} catch (const std::exception &e) {
-		sqlite3_result_error(ctx, e.what(), -1);
+	auto url = ArgText(argc, argv, 0);
+	std::unique_ptr<char, void (*)(void *)> result(
+	    bh_negotiate_auth_header_json(url.c_str()), bh_free);
+	if (!result) {
+		sqlite3_result_error(ctx, bh_errmsg(), -1);
+		return;
 	}
+	sqlite3_result_text(ctx, result.get(), -1, SQLITE_TRANSIENT);
 }
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -280,37 +214,14 @@ static void negotiate_auth_header_json_func(sqlite3_context *ctx, int argc, sqli
  * ══════════════════════════════════════════════════════════════════════ */
 
 static void bhttp_rate_limit_stats_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
-	nlohmann::json arr = nlohmann::json::array();
-
-	auto snapshot = [](const std::string &host, GCRARateLimiter &limiter) -> nlohmann::json {
-		return {
-		    {"host", host},
-		    {"rate_limit", limiter.RateSpec()},
-		    {"rate_rps", limiter.Rate()},
-		    {"burst", limiter.Burst()},
-		    {"requests", limiter.Requests()},
-		    {"paced", limiter.Paced()},
-		    {"total_wait_seconds", limiter.TotalWaitSeconds()},
-		    {"throttled_429", limiter.Throttled429()},
-		    {"backlog_seconds", limiter.BacklogSeconds()},
-		    {"total_responses", limiter.TotalResponses()},
-		    {"total_response_bytes", limiter.TotalResponseBytes()},
-		    {"total_elapsed", limiter.TotalElapsed()},
-		    {"min_elapsed", limiter.MinElapsed()},
-		    {"max_elapsed", limiter.MaxElapsed()},
-		    {"errors", limiter.Errors()},
-		};
-	};
-
-	auto *global = GlobalLimiterSnapshot();
-	if (global) arr.push_back(snapshot("(global)", *global));
-
-	Registry().ForEach([&](const std::string &host, GCRARateLimiter &limiter) {
-		arr.push_back(snapshot(host, limiter));
-	});
-
-	auto result = arr.dump();
-	sqlite3_result_text(ctx, result.c_str(), result.length(), SQLITE_TRANSIENT);
+	(void)argc;
+	(void)argv;
+	std::unique_ptr<char, void (*)(void *)> stats(bh_rate_limit_stats_json(), bh_free);
+	if (!stats) {
+		sqlite3_result_error(ctx, bh_errmsg(), -1);
+		return;
+	}
+	sqlite3_result_text(ctx, stats.get(), -1, SQLITE_TRANSIENT);
 }
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -349,275 +260,88 @@ static std::string SqliteEscapeSql(const std::string &s) {
 }
 
 //! POST to a chat completions endpoint. Returns parsed response + elapsed.
-static std::pair<nlohmann::json, double> SqlitePostChatCompletion(
-    const std::string &url,
-    const nlohmann::json &body,
-    const HttpConfig &config) {
-
-	auto session = std::make_shared<cpr::Session>();
-	session->SetUrl(cpr::Url{url});
-	session->SetTimeout(cpr::Timeout{config.timeout * 1000});
-
-	cpr::Header hdrs;
-	hdrs["Content-Type"] = "application/json";
-	if (config.auth_type == "bearer" && !config.bearer_token.empty()) {
-		hdrs["Authorization"] = "Bearer " + config.bearer_token;
-	}
-	session->SetHeader(hdrs);
-
-	if (!config.verify_ssl) session->SetVerifySsl(cpr::VerifySsl{false});
-	if (!config.proxy.empty()) {
-		session->SetProxies(cpr::Proxies{{"http", config.proxy}, {"https", config.proxy}});
-	}
-
-	session->SetBody(cpr::Body{body.dump()});
-
-	auto host = ExtractHost(url);
-	AcquireRateLimit(GlobalLimiter(config.global_rate_limit_spec, config.global_burst));
-	AcquireRateLimit(Registry().GetOrCreate(host, config.rate_limit_spec, config.burst));
-
-	auto response = session->Post();
-	RecordResponseStats(response, host);
-
-	if (response.status_code != 200) {
-		throw std::runtime_error(
-		    "LLM request failed (HTTP " + std::to_string(response.status_code) +
-		    "): " + response.text.substr(0, 500));
-	}
-
-	return {nlohmann::json::parse(response.text), response.elapsed};
-}
-
 static void bhttp_adapt_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
-	if (argc < 2) {
-		sqlite3_result_error(ctx, "bhttp_adapt requires 2 arguments: adapter_name, params_json", -1);
+	if (argc < 1) {
+		sqlite3_result_error(ctx, "bh_http_adapt requires at least 1 argument: adapter_name", -1);
 		return;
 	}
 
 	const char *adapter_name_str = reinterpret_cast<const char *>(sqlite3_value_text(argv[0]));
-	const char *params_str = reinterpret_cast<const char *>(sqlite3_value_text(argv[1]));
+	const char *params_str = argc >= 2
+	    ? reinterpret_cast<const char *>(sqlite3_value_text(argv[1])) : nullptr;
 	if (!params_str) params_str = "{}";
 
 	sqlite3 *db = sqlite3_context_db_handle(ctx);
 
 	try {
-		nlohmann::json params = nlohmann::json::parse(params_str);
-
-		// Look up adapter row as JSON
-		nlohmann::json adapter_row = nlohmann::json::object();
-		if (adapter_name_str && adapter_name_str[0]) {
-			std::string sql =
-			    "SELECT json_object("
-			    "'prompt_template', prompt_template, "
-			    "'output_schema', output_schema, "
-			    "'response_jmespath', response_jmespath, "
-			    "'max_tokens', max_tokens"
-			    ") FROM llm_adapter WHERE name = '" +
-			    SqliteEscapeSql(adapter_name_str) + "'";
-
-			auto json_str = SqliteQueryScalar(db, sql);
-			if (json_str.empty()) {
-				std::string err = std::string("Adapter '") + adapter_name_str +
-				                  "' not found in llm_adapter table";
-				sqlite3_result_error(ctx, err.c_str(), err.size());
-				return;
-			}
-			adapter_row = nlohmann::json::parse(json_str);
-			for (auto it = adapter_row.begin(); it != adapter_row.end(); ) {
-				if (it.value().is_null()) it = adapter_row.erase(it);
-				else ++it;
-			}
-		}
-
-		// Merge: adapter is base, params overwrite
-		nlohmann::json cfg = adapter_row;
-		cfg.merge_patch(params);
-
-		// Resolve infrastructure
-		std::string endpoint = cfg.value("endpoint", "http://localhost:8080/v1/chat/completions");
-		std::string model = cfg.value("model", "anthropic/claude-haiku-4-5-20251001");
-		std::string output_schema = cfg.value("output_schema", "");
-		std::string response_jmespath = cfg.value("response_jmespath", "");
-
-		auto parse_int = [&cfg](const char *key, int def) -> int {
-			if (!cfg.contains(key)) return def;
-			auto &v = cfg[key];
-			if (v.is_number()) return v.get<int>();
-			if (v.is_string()) {
-				try { return std::stoi(v.get<std::string>()); } catch (...) {}
-			}
-			return def;
-		};
-		int max_tokens = parse_int("max_tokens", 4096);
-		int max_continuations = parse_int("max_continuations", 10);
-		int max_retries = parse_int("max_retries", 3);
-
-		// Render prompt via bt_template_render() (blobtemplates SQLite function)
-		std::string prompt_template = cfg.value("prompt_template", "");
-		std::string prompt_text;
-		if (!prompt_template.empty()) {
-			std::string sql = "SELECT bt_template_render('" +
-			    SqliteEscapeSql(prompt_template) + "', '" +
-			    SqliteEscapeSql(std::string(params_str)) + "')";
-			prompt_text = SqliteQueryScalar(db, sql);
-			if (prompt_text.empty()) {
-				sqlite3_result_error(ctx, "bt_template_render failed — is blobtemplates loaded?", -1);
-				return;
-			}
-		} else {
-			sqlite3_result_error(ctx, "No prompt_template in adapter config", -1);
+		// ── Host-specific half: the adapter row and the rendered prompt ──
+		//
+		// This is why bh_http_adapt exists in the adapter rather than the
+		// core: it reads a table in the caller's own database, and renders
+		// through blobtemplates' bt_template_render() if that extension is
+		// loaded. DuckDB does the equivalent in the llm_adapt() macro.
+		if (!adapter_name_str || !adapter_name_str[0]) {
+			sqlite3_result_error(ctx, "adapter_name must not be NULL", -1);
 			return;
 		}
 
-		// Resolve HTTP config
-		std::vector<std::pair<std::string, std::string>> config_entries;
-		HttpConfig config = ResolveConfig(endpoint, config_entries);
-		std::vector<std::pair<std::string, std::string>> http_params;
-		ResolveVaultSecrets(config, http_params);
+		std::string sql =
+		    "SELECT json_object("
+		    "'prompt_template', prompt_template, "
+		    "'output_schema', output_schema, "
+		    "'response_jmespath', response_jmespath, "
+		    "'max_tokens', max_tokens"
+		    ") FROM llm_adapter WHERE name = '" +
+		    SqliteEscapeSql(adapter_name_str) + "'";
 
-		// Build request body
-		nlohmann::json body = {
-		    {"model", model},
-		    {"max_tokens", max_tokens},
-		    {"messages", nlohmann::json::array({
-		        {{"role", "user"}, {"content", prompt_text}}
-		    })}
-		};
+		auto adapter_json = SqliteQueryScalar(db, sql);
+		if (adapter_json.empty()) {
+			std::string err = std::string("Adapter '") + adapter_name_str + "' not found";
+			sqlite3_result_error(ctx, err.c_str(), -1);
+			return;
+		}
+		auto cfg = nlohmann::json::parse(adapter_json);
 
-		// Schema setup
-		bool use_schema = !output_schema.empty();
-		std::unique_ptr<jsoncons::jsonschema::json_schema<jsoncons::json>> compiled_schema;
-		if (use_schema) {
-			auto schema_json = nlohmann::json::parse(output_schema);
-			body["tools"] = nlohmann::json::array({{
-			    {"type", "function"},
-			    {"function", {{"name", "extract"}, {"parameters", schema_json}}}
-			}});
-			body["tool_choice"] = {
-			    {"type", "function"},
-			    {"function", {{"name", "extract"}}}
-			};
-			auto jc_schema = jsoncons::json::parse(output_schema);
-			compiled_schema = std::make_unique<jsoncons::jsonschema::json_schema<jsoncons::json>>(
-			    jsoncons::jsonschema::make_json_schema(std::move(jc_schema)));
+		std::string prompt_template = cfg.value("prompt_template", "");
+		if (prompt_template.empty()) {
+			sqlite3_result_error(ctx, "No prompt_template in adapter config", -1);
+			return;
+		}
+		std::string render_sql = "SELECT bt_template_render('" +
+		    SqliteEscapeSql(prompt_template) + "', '" +
+		    SqliteEscapeSql(std::string(params_str)) + "')";
+		std::string prompt_text = SqliteQueryScalar(db, render_sql);
+		if (prompt_text.empty()) {
+			sqlite3_result_error(ctx,
+			    "bt_template_render failed — is blobtemplates loaded?", -1);
+			return;
 		}
 
-		// Stats tracking
-		int stat_requests = 0, stat_continuations = 0, stat_retries = 0;
-		int stat_prompt_tokens = 0, stat_completion_tokens = 0, stat_total_tokens = 0;
-		double stat_elapsed = 0.0;
-		std::string stat_model, stat_finish_reason;
-
-		auto accumulate = [&](const nlohmann::json &resp, double elapsed) {
-			stat_requests++;
-			stat_elapsed += elapsed;
-			if (resp.contains("usage")) {
-				stat_prompt_tokens += resp["usage"].value("prompt_tokens", 0);
-				stat_completion_tokens += resp["usage"].value("completion_tokens", 0);
-				stat_total_tokens += resp["usage"].value("total_tokens", 0);
-			}
-			if (resp.contains("model")) stat_model = resp["model"].get<std::string>();
-		};
-
-		// Completion with continuation
-		auto do_complete = [&](nlohmann::json &req_body) -> std::string {
-			std::string accumulated;
-			for (int cont = 0; cont < max_continuations; cont++) {
-				auto [resp, elapsed] = SqlitePostChatCompletion(endpoint, req_body, config);
-				accumulate(resp, elapsed);
-
-				auto &choice = resp["choices"][0];
-				auto &msg = choice["message"];
-				std::string fragment;
-				if (msg.contains("tool_calls") && !msg["tool_calls"].empty()) {
-					fragment = msg["tool_calls"][0]["function"]["arguments"].get<std::string>();
-				} else if (msg.contains("content") && !msg["content"].is_null()) {
-					fragment = msg["content"].get<std::string>();
-				}
-
-				accumulated += fragment;
-				std::string fr = choice.value("finish_reason", "");
-				if (fr != "length") {
-					stat_finish_reason = fr;
-					return accumulated;
-				}
-				stat_continuations++;
-				req_body["messages"].push_back({{"role", "assistant"}, {"content", accumulated}});
-				req_body["messages"].push_back({{"role", "user"}, {"content", "Continue exactly where you left off."}});
-			}
-			throw std::runtime_error("Continuation limit reached");
-		};
-
-		// Execute with optional validation retry
-		std::string content;
-		if (!use_schema) {
-			content = do_complete(body);
-		} else {
-			for (int attempt = 0; attempt < max_retries; attempt++) {
-				nlohmann::json attempt_body = body;
-				auto result = do_complete(attempt_body);
-				try {
-					auto parsed = jsoncons::json::parse(result);
-					jsoncons::json_decoder<jsoncons::json> decoder;
-					compiled_schema->validate(parsed, decoder);
-					auto output = decoder.get_result();
-					if (output.is_object() && output.contains("valid") &&
-					    !output["valid"].as<bool>()) {
-						std::ostringstream oss;
-						oss << jsoncons::pretty_print(output);
-						std::string error_text = oss.str();
-						if (error_text.size() > 2000) error_text = error_text.substr(0, 2000) + "...";
-						stat_retries++;
-						body["messages"].push_back({{"role", "assistant"}, {"content", result}});
-						body["messages"].push_back({{"role", "user"},
-						    {"content", "Validation errors:\n" + error_text + "\nFix the errors and try again."}});
-						continue;
-					}
-					content = result;
-					break;
-				} catch (const jsoncons::ser_error &e) {
-					stat_retries++;
-					body["messages"].push_back({{"role", "assistant"}, {"content", result}});
-					body["messages"].push_back({{"role", "user"},
-					    {"content", std::string("Invalid JSON: ") + e.what() + "\nReturn valid JSON."}});
-					continue;
-				}
-			}
-			if (content.empty()) {
-				throw std::runtime_error("Schema validation failed after retries");
-			}
+		// ── Portable half: hand it to the core ──────────────────────────
+		//
+		// Was ~200 lines here: its own chat-completion POST, its own
+		// continuation loop and its own schema compile-and-retry — a third
+		// copy of what LlmCompleteLoop does, free to drift from the other
+		// two. Same function name, same SQL, same behaviour now.
+		nlohmann::json request;
+		request["prompt_text"] = prompt_text;
+		request["output_schema"] = cfg.value("output_schema", "");
+		request["response_jmespath"] = cfg.value("response_jmespath", "");
+		if (cfg.contains("max_tokens") && !cfg["max_tokens"].is_null()) {
+			request["max_tokens"] = cfg["max_tokens"];
+		}
+		for (const char *key : {"endpoint", "model", "max_continuations", "max_retries"}) {
+			if (cfg.contains(key) && !cfg[key].is_null()) request[key] = cfg[key];
 		}
 
-		// Apply response JMESPath
-		if (!response_jmespath.empty()) {
-			auto doc = jsoncons::json::parse(content);
-			auto jmes_result = jsoncons::jmespath::search(doc, response_jmespath);
-			std::ostringstream oss;
-			oss << jmes_result;
-			content = oss.str();
+		auto request_str = request.dump();
+		std::unique_ptr<char, void (*)(void *)> result(
+		    bh_llm_adapt(request_str.c_str()), bh_free);
+		if (!result) {
+			sqlite3_result_error(ctx, bh_errmsg(), -1);
+			return;
 		}
-
-		// Build result with _meta
-		nlohmann::json result_obj;
-		try {
-			result_obj["data"] = nlohmann::json::parse(content);
-		} catch (...) {
-			result_obj["data"] = content;
-		}
-		result_obj["_meta"] = {
-		    {"http_requests", stat_requests},
-		    {"continuations", stat_continuations},
-		    {"retries", stat_retries},
-		    {"prompt_tokens", stat_prompt_tokens},
-		    {"completion_tokens", stat_completion_tokens},
-		    {"total_tokens", stat_total_tokens},
-		    {"elapsed_seconds", stat_elapsed},
-		    {"model", stat_model},
-		    {"finish_reason", stat_finish_reason}
-		};
-
-		auto final_str = result_obj.dump();
-		sqlite3_result_text(ctx, final_str.c_str(), final_str.length(), SQLITE_TRANSIENT);
+		sqlite3_result_text(ctx, result.get(), -1, SQLITE_TRANSIENT);
 
 	} catch (const std::exception &e) {
 		sqlite3_result_error(ctx, e.what(), -1);
