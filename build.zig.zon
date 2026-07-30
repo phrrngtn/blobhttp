@@ -4,7 +4,10 @@
     .fingerprint = 0x17961532683c2196,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
-        .blobzig = .{ .path = "../blobzig" },
+        .blobzig = .{
+            .url = "git+https://github.com/phrrngtn/blobzig?ref=main#b897a9083ef955018b3dc08701186acca0eb528b",
+            .hash = "blobzig-0.1.0-DiYQfRExCwCDKZPC6TdhOUJg67M9S52nLF2a6Lwe1a7Y",
+        },
         .jsoncons = .{
             .url = "git+https://github.com/danielaparker/jsoncons?ref=v1.1.0#eee098be8f774f64527281d5beb9e90aa9b73e06",
             .hash = "N-V-__8AAFoyvwDf-YUd1Fao5si6STwBX1FoPIu9TMOuPOe3",
