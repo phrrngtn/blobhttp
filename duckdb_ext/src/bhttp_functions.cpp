@@ -1,18 +1,15 @@
 #include "duckdb_extension.h"
 #include "bhttp_ext.hpp"
+#include "blobhttp.h"
+#include "blobhttp_internal.hpp"
 #include "http_config.hpp"
-#include "lru_pool.hpp"
-#include "negotiate_auth.hpp"
 #include "rate_limiter.hpp"
 
 #include <algorithm>
-#include <chrono>
 #include <cstring>
 #include <string>
-#include <thread>
 #include <vector>
 
-#include <cpr/cpr.h>
 #include <nlohmann/json.hpp>
 
 #include "sql_resources.hpp"
@@ -21,63 +18,6 @@ DUCKDB_EXTENSION_EXTERN
 
 namespace blobhttp {
 
-// ---------------------------------------------------------------------------
-// Global state: session pool and rate limiter registry
-// ---------------------------------------------------------------------------
-
-static LRUPool<std::string, cpr::Session> &GetSessionPool() {
-	static LRUPool<std::string, cpr::Session> pool(50);
-	return pool;
-}
-
-RateLimiterRegistry &GetRateLimiterRegistry() {
-	static RateLimiterRegistry registry(200);
-	return registry;
-}
-
-//! Global rate limiter — caps total outbound requests/second across all hosts.
-//! Lazily initialized on first use; re-created if the spec changes.
-static std::mutex g_global_limiter_mutex;
-static std::unique_ptr<GCRARateLimiter> g_global_limiter;
-static std::string g_global_limiter_spec;
-
-//! Get or (re)create the global rate limiter. Returns nullptr if no global limit is configured.
-GCRARateLimiter *GetGlobalLimiter(const std::string &spec, double burst) {
-	if (spec.empty()) {
-		return nullptr;
-	}
-	std::lock_guard<std::mutex> lock(g_global_limiter_mutex);
-	if (!g_global_limiter || g_global_limiter_spec != spec) {
-		double rate = ParseRateLimit(spec);
-		g_global_limiter = std::make_unique<GCRARateLimiter>(rate, burst, spec);
-		g_global_limiter_spec = spec;
-	}
-	return g_global_limiter.get();
-}
-
-//! Snapshot the global limiter for diagnostics (returns nullptr if not configured).
-static GCRARateLimiter *GetGlobalLimiterSnapshot() {
-	std::lock_guard<std::mutex> lock(g_global_limiter_mutex);
-	return g_global_limiter.get();
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-//! Extract hostname from a URL (for rate limiter keying and session pooling).
-static std::string ExtractHost(const std::string &url) {
-	auto pos = url.find("://");
-	if (pos == std::string::npos) {
-		return url;
-	}
-	auto host_start = pos + 3;
-	auto host_end = url.find_first_of(":/?#", host_start);
-	if (host_end == std::string::npos) {
-		host_end = url.length();
-	}
-	return url.substr(host_start, host_end - host_start);
-}
 
 //! Read a MAP(VARCHAR, VARCHAR) from a data chunk vector at the given row.
 //! MAPs are stored as LIST(STRUCT(key, value)). Returns empty if NULL.
@@ -134,251 +74,6 @@ static void WriteMapEntry(duckdb_vector map_vec, idx_t row,
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Bind data: holds parsed parameters for one table function invocation
-// ---------------------------------------------------------------------------
-
-struct HttpBindData {
-	std::string method;
-	std::string url;
-	std::vector<std::pair<std::string, std::string>> headers;
-	std::vector<std::pair<std::string, std::string>> params; // GET query params
-	std::string body;
-	std::string content_type;
-	int timeout_override = -1;    // -1 means use config
-	int verify_ssl_override = -1; // -1 means use config, 0 = false, 1 = true
-	// Config entries from the SQL macro layer (read from getvariable in caller's context)
-	std::vector<std::pair<std::string, std::string>> config_entries;
-};
-
-// ---------------------------------------------------------------------------
-// Core: build sessions and execute HTTP requests
-// ---------------------------------------------------------------------------
-
-struct HttpResult {
-	std::string request_url;
-	std::string request_method;
-	std::vector<std::pair<std::string, std::string>> request_headers;
-	std::string request_body;
-	int response_status_code = 0;
-	std::string response_status;
-	std::vector<std::pair<std::string, std::string>> response_headers;
-	std::string response_body;
-	std::string response_url;
-	double elapsed = 0.0;
-	int redirect_count = 0;
-	std::string response_blob;  // raw bytes (same data as response_body, but preserved as BLOB)
-};
-
-//! Map a method string to cpr::MultiPerform::HttpMethod.
-static cpr::MultiPerform::HttpMethod ToCprMethod(const std::string &method) {
-	if (method == "GET") return cpr::MultiPerform::HttpMethod::GET_REQUEST;
-	if (method == "POST") return cpr::MultiPerform::HttpMethod::POST_REQUEST;
-	if (method == "PUT") return cpr::MultiPerform::HttpMethod::PUT_REQUEST;
-	if (method == "DELETE") return cpr::MultiPerform::HttpMethod::DELETE_REQUEST;
-	if (method == "PATCH") return cpr::MultiPerform::HttpMethod::PATCH_REQUEST;
-	if (method == "HEAD") return cpr::MultiPerform::HttpMethod::HEAD_REQUEST;
-	if (method == "OPTIONS") return cpr::MultiPerform::HttpMethod::OPTIONS_REQUEST;
-	throw std::runtime_error("Unsupported HTTP method: " + method);
-}
-
-//! Build a configured cpr::Session from bind data and resolved config.
-//! Returns the session (as shared_ptr for MultiPerform) and the headers used (for result building).
-static std::pair<std::shared_ptr<cpr::Session>, cpr::Header>
-BuildSession(const HttpBindData &bind_data, const HttpConfig &config) {
-	int timeout = (bind_data.timeout_override >= 0) ? bind_data.timeout_override : config.timeout;
-
-	auto session = std::make_shared<cpr::Session>();
-	session->SetUrl(cpr::Url{bind_data.url});
-	session->SetTimeout(cpr::Timeout{timeout * 1000});
-
-	cpr::Header cpr_headers;
-	for (auto &[k, v] : bind_data.headers) {
-		cpr_headers[k] = v;
-	}
-
-	// Apply auth from config
-	if (config.auth_type == "negotiate" && cpr_headers.find("Authorization") == cpr_headers.end()) {
-		// Propagate Negotiate errors — a silent failure here would cause a
-		// confusing 401 downstream with no indication that token generation
-		// was even attempted.
-		auto neg_result = GenerateNegotiateToken(bind_data.url);
-		cpr_headers["Authorization"] = "Negotiate " + neg_result.token;
-	} else if (config.auth_type == "bearer" && !config.bearer_token.empty() &&
-	           cpr_headers.find("Authorization") == cpr_headers.end()) {
-		// Check expiry before using the token
-		if (config.bearer_token_expires_at > 0) {
-			auto now = std::chrono::system_clock::now();
-			auto now_epoch = std::chrono::duration_cast<std::chrono::seconds>(
-			    now.time_since_epoch()).count();
-			if (now_epoch >= config.bearer_token_expires_at) {
-				auto format_time = [](int64_t epoch) -> std::string {
-					time_t t = static_cast<time_t>(epoch);
-					struct tm tm_buf;
-#ifdef _WIN32
-					gmtime_s(&tm_buf, &t);
-#else
-					gmtime_r(&t, &tm_buf);
-#endif
-					char buf[32];
-					strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm_buf);
-					return std::string(buf) + " (" + std::to_string(epoch) + ")";
-				};
-				throw std::runtime_error(
-				    "Bearer token for " + ExtractHost(bind_data.url) +
-				    " expired at " + format_time(config.bearer_token_expires_at) +
-				    " (current time: " + format_time(now_epoch) +
-				    "). Refresh the token via your application and update bh_http_config.");
-			}
-		}
-		cpr_headers["Authorization"] = "Bearer " + config.bearer_token;
-	}
-
-	auto content_type = bind_data.content_type;
-	if (!bind_data.body.empty() && content_type.empty()) {
-		content_type = "application/json";
-	}
-	if (!content_type.empty()) {
-		cpr_headers["Content-Type"] = content_type;
-	}
-
-	session->SetHeader(cpr_headers);
-
-	bool verify_ssl = (bind_data.verify_ssl_override >= 0) ? (bind_data.verify_ssl_override == 1) : config.verify_ssl;
-	if (!verify_ssl) {
-		session->SetVerifySsl(cpr::VerifySsl{false});
-	}
-	if (!config.ca_bundle.empty() || !config.client_cert.empty() || !config.client_key.empty()) {
-		cpr::SslOptions ssl_opts;
-		if (!config.ca_bundle.empty()) {
-			ssl_opts.SetOption(cpr::ssl::CaInfo{config.ca_bundle});
-		}
-		if (!config.client_cert.empty()) {
-			ssl_opts.SetOption(cpr::ssl::CertFile{config.client_cert});
-		}
-		if (!config.client_key.empty()) {
-			ssl_opts.SetOption(cpr::ssl::KeyFile{config.client_key});
-		}
-		session->SetSslOptions(ssl_opts);
-	}
-	if (!config.proxy.empty()) {
-		session->SetProxies(cpr::Proxies{{"http", config.proxy}, {"https", config.proxy}});
-	}
-
-	if (!bind_data.params.empty()) {
-		cpr::Parameters cpr_params;
-		for (auto &[k, v] : bind_data.params) {
-			cpr_params.Add(cpr::Parameter{k, v});
-		}
-		session->SetParameters(cpr_params);
-	}
-
-	if (!bind_data.body.empty()) {
-		session->SetBody(cpr::Body{bind_data.body});
-	}
-
-	return {session, cpr_headers};
-}
-
-//! Convert a cpr::Response into an HttpResult.
-static HttpResult ResponseToResult(const cpr::Response &response, const HttpBindData &bind_data,
-                                   const cpr::Header &req_headers) {
-	HttpResult result;
-	result.request_url = bind_data.url;
-	result.request_method = bind_data.method;
-
-	for (auto &[k, v] : req_headers) {
-		result.request_headers.emplace_back(k, v);
-	}
-	result.request_body = bind_data.body;
-
-	result.response_status_code = static_cast<int>(response.status_code);
-	result.response_status = response.status_line;
-	for (auto &[k, v] : response.header) {
-		std::string lower_k = k;
-		std::transform(lower_k.begin(), lower_k.end(), lower_k.begin(), ::tolower);
-		result.response_headers.emplace_back(lower_k, v);
-	}
-	result.response_body = response.text;
-	result.response_blob = response.text;  // same bytes, will be written as BLOB
-	result.response_url = response.url.str();
-	result.elapsed = response.elapsed;
-	result.redirect_count = static_cast<int>(response.redirect_count);
-
-	return result;
-}
-
-//! Acquire a rate limit token from the given limiter, sleeping if necessary.
-//! Records pacing stats on the limiter.
-void AcquireRateLimit(GCRARateLimiter *limiter) {
-	if (!limiter) return;
-	int max_retries = 50;
-	bool was_paced = false;
-	double total_pacing = 0.0;
-	while (!limiter->TryAcquire() && max_retries-- > 0) {
-		double wait = limiter->WaitTime();
-		if (wait > 0.0) {
-			was_paced = true;
-			total_pacing += wait;
-			std::this_thread::sleep_for(std::chrono::duration<double>(wait));
-		}
-	}
-	limiter->RecordRequest();
-	if (was_paced) {
-		limiter->RecordPacing(total_pacing);
-	}
-}
-
-//! Record response facts and handle 429 feedback.
-void RecordResponseStats(const cpr::Response &response, const std::string &host) {
-	auto *limiter = GetRateLimiterRegistry().GetOrCreate(host);
-	if (!limiter) return;
-
-	limiter->RecordResponse(response.elapsed, response.text.size(),
-	                        static_cast<int>(response.status_code));
-
-	if (response.status_code == 429) {
-		double retry_after = 1.0;
-		auto it = response.header.find("Retry-After");
-		if (it != response.header.end()) {
-			try { retry_after = std::stod(it->second); } catch (...) {}
-		}
-		limiter->RecordThrottle(retry_after);
-	}
-
-	// Record on the global limiter too, if active
-	auto *global = GetGlobalLimiterSnapshot();
-	if (global) {
-		global->RecordResponse(response.elapsed, response.text.size(),
-		                       static_cast<int>(response.status_code));
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Scalar function: _bh_http_raw_request(method, url, headers_map, body,
-//                                       content_type, config_json)
-// Returns a STRUCT with the full request/response envelope.
-// ---------------------------------------------------------------------------
-
-//! Parse a JSON object string into key-value pairs. Returns empty on null/invalid.
-static std::vector<std::pair<std::string, std::string>> ParseJsonObject(const char *str, size_t len) {
-	std::vector<std::pair<std::string, std::string>> result;
-	if (!str || len == 0) {
-		return result;
-	}
-	try {
-		auto j = nlohmann::json::parse(std::string(str, len));
-		if (j.is_object()) {
-			for (auto &[key, val] : j.items()) {
-				result.emplace_back(key, val.is_string() ? val.get<std::string>() : val.dump());
-			}
-		}
-	} catch (...) {
-		// Malformed JSON — return empty
-	}
-	return result;
-}
-
 //! Helper to read a VARCHAR vector element, returning empty string if null.
 static std::string ReadVarchar(duckdb_vector vec, uint64_t *validity, idx_t row) {
 	if (validity && !(validity[row / 64] & (1ULL << (row % 64)))) {
@@ -390,55 +85,92 @@ static std::string ReadVarchar(duckdb_vector vec, uint64_t *validity, idx_t row)
 	return std::string(str, len);
 }
 
-//! Write non-MAP fields of an HttpResult into the struct output vector at the given row index.
-//! MAP fields (request_headers, response_headers) are written separately in bulk
-//! because they share a list child vector across rows and need coordinated offsets.
-static void WriteResultScalarFields(duckdb_vector output, idx_t row, const HttpResult &result) {
-	auto set_varchar = [&](idx_t col, const std::string &val) {
+//! Write the non-MAP struct fields for one result.
+//! MAP fields (2, 6) share a list child across rows and are written in bulk
+//! afterwards with coordinated offsets.
+static void WriteResultScalarFields(duckdb_vector output, idx_t row,
+                                    const bh_batch *batch, size_t i) {
+	auto set_varchar = [&](idx_t col, const char *s, size_t len) {
 		duckdb_vector vec = duckdb_struct_vector_get_child(output, col);
-		duckdb_vector_assign_string_element_len(vec, row, val.c_str(), val.length());
+		duckdb_vector_assign_string_element_len(vec, row, s ? s : "", len);
 	};
 	auto set_int = [&](idx_t col, int val) {
 		duckdb_vector vec = duckdb_struct_vector_get_child(output, col);
-		auto *data = (int32_t *)duckdb_vector_get_data(vec);
-		data[row] = val;
+		((int32_t *)duckdb_vector_get_data(vec))[row] = val;
 	};
 	auto set_double = [&](idx_t col, double val) {
 		duckdb_vector vec = duckdb_struct_vector_get_child(output, col);
-		auto *data = (double *)duckdb_vector_get_data(vec);
-		data[row] = val;
+		((double *)duckdb_vector_get_data(vec))[row] = val;
 	};
 
-	set_varchar(0, result.request_url);
-	set_varchar(1, result.request_method);
-	// field 2 (request_headers) is MAP — written in bulk
-	set_varchar(3, result.request_body);
-	set_int(4, result.response_status_code);
-	set_varchar(5, result.response_status);
-	// field 6 (response_headers) is MAP — written in bulk
-	set_varchar(7, result.response_body);
-	set_varchar(8, result.response_url);
-	set_double(9, result.elapsed);
-	set_int(10, result.redirect_count);
-	// field 11: response_blob — raw bytes as BLOB (preserves null bytes that VARCHAR truncates)
-	{
-		duckdb_vector vec = duckdb_struct_vector_get_child(output, 11);
-		duckdb_vector_assign_string_element_len(vec, row,
-			result.response_blob.data(), result.response_blob.size());
-	}
+	size_t len = 0;
+	const char *s;
+
+	s = bh_result_request_url(batch, i, &len);       set_varchar(0, s, len);
+	s = bh_result_request_method(batch, i, &len);    set_varchar(1, s, len);
+	s = (const char *)bh_result_request_body(batch, i, &len); set_varchar(3, s, len);
+	set_int(4, bh_result_status(batch, i));
+	s = bh_result_status_line(batch, i, &len);       set_varchar(5, s, len);
+
+	// response_body (VARCHAR, field 7) and response_blob (BLOB, field 11) are
+	// the same bytes. VARCHAR silently degrades for a non-UTF-8 body — every
+	// string operation on it yields NULL — which is exactly why the BLOB field
+	// exists and why bh_result_body hands back raw bytes with a length.
+	//
+	// body_len is its own variable rather than reusing `len`: the BLOB is
+	// written last, and the intervening response_url accessor would otherwise
+	// overwrite the length out-param — which truncated the blob to the length
+	// of the URL, a bug that reads like a server problem rather than ours.
+	size_t body_len = 0;
+	const char *body = (const char *)bh_result_body(batch, i, &body_len);
+	set_varchar(7, body, body_len);
+
+	s = bh_result_response_url(batch, i, &len);      set_varchar(8, s, len);
+	set_double(9, bh_result_elapsed(batch, i));
+	set_int(10, bh_result_redirect_count(batch, i));
+
+	duckdb_vector blob_vec = duckdb_struct_vector_get_child(output, 11);
+	duckdb_vector_assign_string_element_len(blob_vec, row, body ? body : "", body_len);
 }
 
-static void HttpRawRequestScalarFunc(duckdb_function_info info, duckdb_data_chunk input, duckdb_vector output) {
+//! Copy one result's headers out of the batch into key/value pairs.
+static std::vector<std::pair<std::string, std::string>>
+ResultHeaders(const bh_batch *batch, size_t i, int which) {
+	std::vector<std::pair<std::string, std::string>> out;
+	size_t n = bh_result_header_count(batch, i, which);
+	out.reserve(n);
+	for (size_t k = 0; k < n; k++) {
+		size_t nlen = 0, vlen = 0;
+		const char *name = bh_result_header_name(batch, i, which, k, &nlen);
+		const char *value = bh_result_header_value(batch, i, which, k, &vlen);
+		out.emplace_back(std::string(name ? name : "", nlen),
+		                 std::string(value ? value : "", vlen));
+	}
+	return out;
+}
+
+// ---------------------------------------------------------------------------
+// Scalar function: _bh_http_raw_request(method, url, headers, params, body,
+//                                       content_type, config)
+//
+// Marshalling only. Config resolution, Vault lookup, rate limiting, session
+// building, execution and response shaping all live in the core now — this
+// reads DuckDB vectors in, hands the whole chunk to one batch, and writes the
+// results back out.
+// ---------------------------------------------------------------------------
+
+static void HttpRawRequestScalarFunc(duckdb_function_info info, duckdb_data_chunk input,
+                                     duckdb_vector output) {
 	idx_t input_size = duckdb_data_chunk_get_size(input);
 	if (input_size == 0) return;
 
 	duckdb_vector method_vec = duckdb_data_chunk_get_vector(input, 0);
 	duckdb_vector url_vec = duckdb_data_chunk_get_vector(input, 1);
-	duckdb_vector headers_vec = duckdb_data_chunk_get_vector(input, 2);  // headers JSON string
-	duckdb_vector params_vec = duckdb_data_chunk_get_vector(input, 3);   // params JSON string
+	duckdb_vector headers_vec = duckdb_data_chunk_get_vector(input, 2);
+	duckdb_vector params_vec = duckdb_data_chunk_get_vector(input, 3);
 	duckdb_vector body_vec = duckdb_data_chunk_get_vector(input, 4);
 	duckdb_vector ct_vec = duckdb_data_chunk_get_vector(input, 5);
-	duckdb_vector config_vec = duckdb_data_chunk_get_vector(input, 6);   // config JSON string
+	duckdb_vector config_vec = duckdb_data_chunk_get_vector(input, 6);
 
 	auto *method_validity = duckdb_vector_get_validity(method_vec);
 	auto *url_validity = duckdb_vector_get_validity(url_vec);
@@ -448,135 +180,94 @@ static void HttpRawRequestScalarFunc(duckdb_function_info info, duckdb_data_chun
 	auto *ct_validity = duckdb_vector_get_validity(ct_vec);
 	auto *config_validity = duckdb_vector_get_validity(config_vec);
 
-	// --- Phase 1: Parse all rows into bind data and resolve configs ---
-	struct RowRequest {
-		HttpBindData bind_data;
-		HttpConfig config;
-		std::string host;
-		std::shared_ptr<cpr::Session> session;
-		cpr::Header req_headers;
-		cpr::MultiPerform::HttpMethod cpr_method;
-	};
-	std::vector<RowRequest> rows(input_size);
+	std::vector<std::vector<std::pair<std::string, std::string>>> all_req_headers(input_size);
+	std::vector<std::vector<std::pair<std::string, std::string>>> all_resp_headers(input_size);
 
-	int max_concurrent = 10; // default; will be overridden by first row's config
+	// The config argument is one expression evaluated per row, and in practice
+	// it is getvariable('bh_http_config') — identical down the chunk. Rows are
+	// grouped into batches by config string so the common case is a single
+	// batch that fans out, while a genuinely per-row config still resolves
+	// correctly rather than silently taking row 0's.
+	idx_t row = 0;
+	while (row < input_size) {
+		std::string config_json = ReadVarchar(config_vec, config_validity, row);
+		idx_t group_end = row + 1;
+		while (group_end < input_size &&
+		       ReadVarchar(config_vec, config_validity, group_end) == config_json) {
+			group_end++;
+		}
 
-	for (idx_t row = 0; row < input_size; row++) {
-		auto method = ReadVarchar(method_vec, method_validity, row);
-		auto url = ReadVarchar(url_vec, url_validity, row);
-
-		if (method.empty() || url.empty()) {
-			duckdb_scalar_function_set_error(info, "method and url are required");
+		bh_batch *batch = bh_batch_new(config_json.empty() ? "{}" : config_json.c_str());
+		if (!batch) {
+			duckdb_scalar_function_set_error(info, bh_errmsg());
 			return;
 		}
 
-		for (auto &c : method) {
-			c = toupper(c);
+		for (idx_t r = row; r < group_end; r++) {
+			auto method = ReadVarchar(method_vec, method_validity, r);
+			auto url = ReadVarchar(url_vec, url_validity, r);
+			if (method.empty() || url.empty()) {
+				bh_batch_free(batch);
+				duckdb_scalar_function_set_error(info, "method and url are required");
+				return;
+			}
+			auto headers = ReadVarchar(headers_vec, headers_validity, r);
+			auto params = ReadVarchar(params_vec, params_validity, r);
+			auto body = ReadVarchar(body_vec, body_validity, r);
+			auto content_type = ReadVarchar(ct_vec, ct_validity, r);
+
+			if (bh_batch_add(batch, method.c_str(), url.c_str(),
+			                 headers.empty() ? nullptr : headers.c_str(),
+			                 params.empty() ? nullptr : params.c_str(),
+			                 body.empty() ? nullptr : body.data(), body.size(),
+			                 content_type.empty() ? nullptr : content_type.c_str(),
+			                 -1, -1) != 0) {
+				bh_batch_free(batch);
+				duckdb_scalar_function_set_error(info, bh_errmsg());
+				return;
+			}
 		}
 
-		auto params_json = ReadVarchar(params_vec, params_validity, row);
-		auto body = ReadVarchar(body_vec, body_validity, row);
-		auto content_type = ReadVarchar(ct_vec, ct_validity, row);
-		auto config_json = ReadVarchar(config_vec, config_validity, row);
-
-		auto &req = rows[row];
-		req.bind_data.method = method;
-		req.bind_data.url = url;
-		auto headers_json = ReadVarchar(headers_vec, headers_validity, row);
-		req.bind_data.headers = ParseJsonObject(headers_json.c_str(), headers_json.size());
-		req.bind_data.params = ParseJsonObject(params_json.c_str(), params_json.size());
-		req.bind_data.body = body;
-		req.bind_data.content_type = content_type;
-		req.bind_data.config_entries = ParseJsonObject(config_json.c_str(), config_json.size());
-
-		req.config = ResolveConfig(url, req.bind_data.config_entries);
-		ResolveVaultSecrets(req.config, req.bind_data.params);
-		req.host = ExtractHost(url);
-
-		try {
-			req.cpr_method = ToCprMethod(method);
-			auto [session, headers] = BuildSession(req.bind_data, req.config);
-			req.session = session;
-			req.req_headers = headers;
-		} catch (const std::exception &e) {
-			duckdb_scalar_function_set_error(info, e.what());
+		if (bh_batch_perform(batch) != 0) {
+			bh_batch_free(batch);
+			duckdb_scalar_function_set_error(info, bh_errmsg());
 			return;
 		}
 
-		if (row == 0) {
-			max_concurrent = req.config.max_concurrent;
+		for (idx_t r = row; r < group_end; r++) {
+			size_t i = r - row;
+			WriteResultScalarFields(output, r, batch, i);
+			all_req_headers[r] = ResultHeaders(batch, i, BH_REQUEST_HEADERS);
+			all_resp_headers[r] = ResultHeaders(batch, i, BH_RESPONSE_HEADERS);
 		}
+
+		bh_batch_free(batch);
+		row = group_end;
 	}
 
-	// --- Phase 2: Execute in batches using MultiPerform ---
-	// Process in sub-batches of max_concurrent, rate-limiting between batches.
-	std::vector<HttpResult> results(input_size);
-
-	for (idx_t batch_start = 0; batch_start < input_size; batch_start += max_concurrent) {
-		idx_t batch_end = std::min(batch_start + (idx_t)max_concurrent, input_size);
-		idx_t batch_size = batch_end - batch_start;
-
-		// Rate-limit: global first, then per-host, for each request in this batch
-		for (idx_t i = batch_start; i < batch_end; i++) {
-			AcquireRateLimit(GetGlobalLimiter(
-			    rows[i].config.global_rate_limit_spec, rows[i].config.global_burst));
-			AcquireRateLimit(GetRateLimiterRegistry().GetOrCreate(
-			    rows[i].host, rows[i].config.rate_limit_spec, rows[i].config.burst));
-		}
-
-		// Build MultiPerform for this batch
-		cpr::MultiPerform multi;
-		for (idx_t i = batch_start; i < batch_end; i++) {
-			multi.AddSession(rows[i].session, rows[i].cpr_method);
-		}
-
-		// Execute all requests in this batch concurrently
-		std::vector<cpr::Response> responses;
-		try {
-			responses = multi.Perform();
-		} catch (const std::exception &e) {
-			duckdb_scalar_function_set_error(info, e.what());
-			return;
-		}
-
-		// Collect results and record stats
-		for (idx_t i = 0; i < batch_size; i++) {
-			idx_t row_idx = batch_start + i;
-			RecordResponseStats(responses[i], rows[row_idx].host);
-			results[row_idx] = ResponseToResult(
-			    responses[i], rows[row_idx].bind_data, rows[row_idx].req_headers);
-		}
-	}
-
-	// --- Phase 3: Write results to struct output vector ---
-
-	// Write scalar (non-MAP) fields per row
-	for (idx_t row = 0; row < input_size; row++) {
-		WriteResultScalarFields(output, row, results[row]);
-	}
-
-	// Write MAP fields (request_headers, response_headers) in bulk.
-	// MAP vectors share a single list child across all rows, so we must
-	// reserve the total capacity and write with coordinated offsets.
-	idx_t total_req_headers = 0, total_resp_headers = 0;
-	for (idx_t row = 0; row < input_size; row++) {
-		total_req_headers += results[row].request_headers.size();
-		total_resp_headers += results[row].response_headers.size();
+	// Write MAP fields in bulk. MAP vectors share a single list child across
+	// all rows, so the total must be reserved and written with coordinated
+	// offsets.
+	idx_t total_req = 0, total_resp = 0;
+	for (idx_t r = 0; r < input_size; r++) {
+		total_req += all_req_headers[r].size();
+		total_resp += all_resp_headers[r].size();
 	}
 
 	duckdb_vector req_headers_map = duckdb_struct_vector_get_child(output, 2);
 	duckdb_vector resp_headers_map = duckdb_struct_vector_get_child(output, 6);
-	duckdb_list_vector_reserve(req_headers_map, total_req_headers);
-	duckdb_list_vector_reserve(resp_headers_map, total_resp_headers);
+	duckdb_list_vector_reserve(req_headers_map, total_req);
+	duckdb_list_vector_reserve(resp_headers_map, total_resp);
 
 	idx_t req_offset = 0, resp_offset = 0;
-	for (idx_t row = 0; row < input_size; row++) {
-		WriteMapEntry(req_headers_map, row, results[row].request_headers, req_offset);
-		WriteMapEntry(resp_headers_map, row, results[row].response_headers, resp_offset);
+	for (idx_t r = 0; r < input_size; r++) {
+		WriteMapEntry(req_headers_map, r, all_req_headers[r], req_offset);
+		WriteMapEntry(resp_headers_map, r, all_resp_headers[r], resp_offset);
 	}
-	duckdb_list_vector_set_size(req_headers_map, total_req_headers);
-	duckdb_list_vector_set_size(resp_headers_map, total_resp_headers);
+	duckdb_list_vector_set_size(req_headers_map, total_req);
+	duckdb_list_vector_set_size(resp_headers_map, total_resp);
 }
+
 
 // Build the STRUCT return type matching the table function's output schema.
 static duckdb_logical_type CreateHttpResultStructType() {
@@ -701,12 +392,12 @@ static void RateLimitStatsBind(duckdb_bind_info info) {
 	};
 
 	// Include the global limiter as a special "(global)" row if configured
-	auto *global = GetGlobalLimiterSnapshot();
+	auto *global = GlobalLimiterSnapshot();
 	if (global) {
 		data->rows.push_back(snapshot("(global)", *global));
 	}
 
-	GetRateLimiterRegistry().ForEach([&](const std::string &host, GCRARateLimiter &limiter) {
+	Registry().ForEach([&](const std::string &host, GCRARateLimiter &limiter) {
 		data->rows.push_back(snapshot(host, limiter));
 	});
 

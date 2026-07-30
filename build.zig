@@ -71,6 +71,7 @@ const Deps = struct {
 /// the system transport.
 fn addCore(b: *std.Build, mod: *std.Build.Module, d: Deps) void {
     mod.addIncludePath(b.path("include"));
+    mod.addIncludePath(b.path("src")); // blobhttp_internal.hpp
     mod.addIncludePath(b.path("third_party")); // nlohmann/json.hpp, cpr/cprver.h
     mod.addIncludePath(d.jsoncons.path("include"));
     mod.addIncludePath(d.cpr.path("include"));
@@ -154,6 +155,8 @@ pub fn build(b: *std.Build) void {
     duckdb_mod.addCMacro("DUCKDB_EXTENSION_NAME", "bhttp");
     duckdb_mod.addCSourceFiles(.{
         .files = &.{
+            "src/blobhttp_core.cpp",
+            "src/blobhttp_llm.cpp",
             "duckdb_ext/src/bhttp_ext.cpp",
             "duckdb_ext/src/bhttp_functions.cpp",
             "duckdb_ext/src/bhttp_llm.cpp",

@@ -2,56 +2,14 @@
 
 #include "duckdb_extension.h"
 
-#include <string>
-#include <vector>
-
-#include <nlohmann/json.hpp>
-#include "http_config.hpp"
-
 namespace blobhttp {
 
-// ---------------------------------------------------------------------------
-// Stats accumulated across all HTTP round-trips in one logical LLM call.
-// Pure C++ — no DuckDB dependency. Usable from SQLite extension too.
-// ---------------------------------------------------------------------------
-
-struct LlmStats {
-	int http_requests = 0;
-	int continuations = 0;
-	int retries = 0;
-	int prompt_tokens = 0;
-	int completion_tokens = 0;
-	int total_tokens = 0;
-	double elapsed_seconds = 0.0;
-	std::string model;
-	std::string finish_reason;
-
-	void AccumulateUsage(const nlohmann::json &response, double elapsed);
-	nlohmann::json ToJson() const;
-};
-
-struct LlmResult {
-	std::string content;
-	LlmStats stats;
-};
-
-// ---------------------------------------------------------------------------
-// Core completion loop — shared by DuckDB and SQLite extensions.
-// ---------------------------------------------------------------------------
-
-LlmResult LlmCompleteLoop(
-    const std::string &url,
-    nlohmann::json body,
-    const HttpConfig &config,
-    const std::vector<std::pair<std::string, std::string>> &extra_headers,
-    const std::string &output_schema_str,
-    int max_continuations,
-    int max_retries);
-
-// ---------------------------------------------------------------------------
-// DuckDB function registration
-// ---------------------------------------------------------------------------
+// LlmStats, LlmResult and the completion loop moved to the core — see
+// include/blobhttp.h (bh_llm_complete / bh_llm_adapt) and
+// src/blobhttp_llm.cpp. What is left in duckdb_ext is registration and the
+// marshalling of DuckDB vectors to and from the JSON the ABI takes.
 
 void RegisterLlmFunctions(duckdb_connection connection);
+void RegisterLlmAdaptFunction(duckdb_connection connection);
 
 } // namespace blobhttp
