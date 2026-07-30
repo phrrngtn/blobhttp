@@ -188,6 +188,31 @@ def llm_adapt(config) -> dict:
     return json.loads(take(lib.bh_llm_adapt(_b(payload))))
 
 
+# ── SSO ─────────────────────────────────────────────────────────────
+
+
+def sso_jwt(issuer: str, client_id: str, client_secret: str = "",
+            redirect_uri: str | None = None, scope: str | None = None,
+            http_config=None) -> dict:
+    """Exchange the ambient Kerberos ticket for a JWT at an OIDC provider.
+
+    Returns the provider's token response — {"access_token": ..., "expires_in":
+    ..., ...}. Nothing is stored or prompted for; the only credential is the one
+    already in the ticket cache, so this fails cleanly with no ticket rather
+    than asking for a password.
+    """
+    req = {"issuer": issuer, "client_id": client_id}
+    if client_secret:
+        req["client_secret"] = client_secret
+    if redirect_uri:
+        req["redirect_uri"] = redirect_uri
+    if scope:
+        req["scope"] = scope
+    if http_config:
+        req["http_config"] = http_config
+    return json.loads(take(lib.bh_sso_jwt(json.dumps(req).encode("utf-8"))))
+
+
 # ── Negotiate ───────────────────────────────────────────────────────
 
 
@@ -217,6 +242,7 @@ __all__ = [
     "request_many",
     "llm_complete",
     "llm_adapt",
+    "sso_jwt",
     "negotiate_token",
     "negotiate_info",
     "negotiate_available",

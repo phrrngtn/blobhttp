@@ -210,6 +210,45 @@ static void negotiate_auth_header_json_func(sqlite3_context *ctx, int argc, sqli
 }
 
 /* ══════════════════════════════════════════════════════════════════════
+ * bh_sso_jwt(config_json)      -> the access token
+ * bh_sso_jwt_json(config_json) -> the provider's whole token response
+ *
+ * Kerberos ticket in, JWT out. blobsso offers the same exchange to DuckDB via
+ * httpfs; SQLite cannot reach a DuckDB extension, which is why this exists.
+ * ══════════════════════════════════════════════════════════════════════ */
+
+static void sso_jwt_impl(sqlite3_context *ctx, int argc, sqlite3_value **argv, bool whole) {
+	auto cfg = ArgText(argc, argv, 0);
+	if (cfg.empty()) {
+		sqlite3_result_error(ctx, "bh_sso_jwt requires a config JSON argument", -1);
+		return;
+	}
+	std::unique_ptr<char, void (*)(void *)> res(bh_sso_jwt(cfg.c_str()), bh_free);
+	if (!res) {
+		sqlite3_result_error(ctx, bh_errmsg(), -1);
+		return;
+	}
+	if (whole) {
+		sqlite3_result_text(ctx, res.get(), -1, SQLITE_TRANSIENT);
+		return;
+	}
+	try {
+		auto tok = nlohmann::json::parse(res.get()).value("access_token", std::string{});
+		sqlite3_result_text(ctx, tok.c_str(), tok.length(), SQLITE_TRANSIENT);
+	} catch (const std::exception &e) {
+		sqlite3_result_error(ctx, e.what(), -1);
+	}
+}
+
+static void bhttp_sso_jwt_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+	sso_jwt_impl(ctx, argc, argv, false);
+}
+
+static void bhttp_sso_jwt_json_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+	sso_jwt_impl(ctx, argc, argv, true);
+}
+
+/* ══════════════════════════════════════════════════════════════════════
  * bh_http_rate_limit_stats() -> JSON array
  * ══════════════════════════════════════════════════════════════════════ */
 
@@ -377,6 +416,14 @@ int sqlite3_bhttp_init(sqlite3 *db, char **pzErrMsg,
 
 	rc = sqlite3_create_function(db, "bh_http_body", -1, SQLITE_UTF8, nullptr,
 	                             bhttp_body_func, nullptr, nullptr);
+	if (rc != SQLITE_OK) return rc;
+
+	rc = sqlite3_create_function(db, "bh_sso_jwt", 1, SQLITE_UTF8, nullptr,
+	                             bhttp_sso_jwt_func, nullptr, nullptr);
+	if (rc != SQLITE_OK) return rc;
+
+	rc = sqlite3_create_function(db, "bh_sso_jwt_json", 1, SQLITE_UTF8, nullptr,
+	                             bhttp_sso_jwt_json_func, nullptr, nullptr);
 	if (rc != SQLITE_OK) return rc;
 
 	rc = sqlite3_create_function(db, "bh_negotiate_auth_header", 1, SQLITE_UTF8, nullptr,

@@ -70,6 +70,59 @@ static void NegotiateAuthTokenJsonFunc(duckdb_function_info info, duckdb_data_ch
 // Function registration helpers
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// bh_sso_jwt(config_json) -> VARCHAR  — the access token
+// bh_sso_jwt_json(config_json) -> VARCHAR — the provider's whole response
+//
+// Kerberos ticket in, JWT out. blobsso does this same exchange for httpfs and
+// turns the result into S3 credentials; here the token is the product, so it
+// can be handed to anything — a vault, an API expecting a bearer, another
+// query.
+// ---------------------------------------------------------------------------
+
+static void SsoJwtFunc(duckdb_function_info info, duckdb_data_chunk input,
+                       duckdb_vector output, bool whole_response) {
+	idx_t input_size = duckdb_data_chunk_get_size(input);
+	duckdb_vector cfg_vec = duckdb_data_chunk_get_vector(input, 0);
+	auto *validity = duckdb_vector_get_validity(cfg_vec);
+	auto *data = (duckdb_string_t *)duckdb_vector_get_data(cfg_vec);
+
+	for (idx_t row = 0; row < input_size; row++) {
+		if (validity && !(validity[row / 64] & (1ULL << (row % 64)))) {
+			duckdb_scalar_function_set_error(info, "bh_sso_jwt: config must not be NULL");
+			return;
+		}
+		std::string cfg(duckdb_string_t_data(&data[row]), duckdb_string_t_length(data[row]));
+
+		std::unique_ptr<char, void (*)(void *)> res(bh_sso_jwt(cfg.c_str()), bh_free);
+		if (!res) {
+			duckdb_scalar_function_set_error(info, bh_errmsg());
+			return;
+		}
+		if (whole_response) {
+			duckdb_vector_assign_string_element_len(output, row, res.get(),
+			                                        std::strlen(res.get()));
+		} else {
+			// Pull out access_token so the common case is not a json_extract.
+			try {
+				auto tok = nlohmann::json::parse(res.get()).value("access_token", "");
+				duckdb_vector_assign_string_element_len(output, row, tok.c_str(), tok.length());
+			} catch (const std::exception &e) {
+				duckdb_scalar_function_set_error(info, e.what());
+				return;
+			}
+		}
+	}
+}
+
+static void SsoJwtTokenFunc(duckdb_function_info i, duckdb_data_chunk in, duckdb_vector out) {
+	SsoJwtFunc(i, in, out, false);
+}
+
+static void SsoJwtJsonFunc(duckdb_function_info i, duckdb_data_chunk in, duckdb_vector out) {
+	SsoJwtFunc(i, in, out, true);
+}
+
 static void RegisterScalarVarcharFunction(duckdb_connection connection, const char *name,
                                           duckdb_scalar_function_t func) {
 	duckdb_scalar_function function = duckdb_create_scalar_function();
@@ -94,6 +147,8 @@ DUCKDB_EXTENSION_ENTRYPOINT(duckdb_connection connection, duckdb_extension_info 
                             struct duckdb_extension_access *access) {
 	RegisterScalarVarcharFunction(connection, "bh_negotiate_auth_header", NegotiateAuthTokenFunc);
 	RegisterScalarVarcharFunction(connection, "bh_negotiate_auth_header_json", NegotiateAuthTokenJsonFunc);
+	RegisterScalarVarcharFunction(connection, "bh_sso_jwt", SsoJwtTokenFunc);
+	RegisterScalarVarcharFunction(connection, "bh_sso_jwt_json", SsoJwtJsonFunc);
 	blobhttp::RegisterHttpFunctions(connection);
 	blobhttp::RegisterLlmFunctions(connection);
 	blobhttp::RegisterLlmAdaptFunction(connection);

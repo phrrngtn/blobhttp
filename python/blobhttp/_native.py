@@ -99,6 +99,7 @@ lib.bh_negotiate_available.restype = ctypes.c_int
 
 blobzig.returns_string(lib.bh_negotiate_auth_header, [_S])
 blobzig.returns_string(lib.bh_negotiate_auth_header_json, [_S])
+blobzig.returns_string(lib.bh_sso_jwt, [_S])
 blobzig.returns_string(lib.bh_llm_complete, [_S])
 blobzig.returns_string(lib.bh_llm_adapt, [_S])
 
