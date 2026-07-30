@@ -169,8 +169,12 @@ pub fn build(b: *std.Build) void {
     const sqlite_mod = base(b, target, optimize);
     addCore(b, sqlite_mod, deps);
     sqlite_mod.addIncludePath(bz.namedLazyPath("sqlite_include"));
-    sqlite_mod.addCSourceFile(.{
-        .file = b.path("sqlite_ext/src/bhttp_sqlite.cpp"),
+    sqlite_mod.addCSourceFiles(.{
+        .files = &.{
+            "src/blobhttp_core.cpp",
+            "src/blobhttp_llm.cpp",
+            "sqlite_ext/src/bhttp_sqlite.cpp",
+        },
         .flags = cxx_flags,
     });
 
