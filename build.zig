@@ -408,13 +408,19 @@ const mbedtls_flags: []const []const u8 = &.{ "-std=c11", "-Wno-unterminated-str
 
 const curl_flags: []const []const u8 = &.{"-std=c11"};
 
-const Deps = struct {
-    jsoncons: *std.Build.Dependency,
-    cpr: *std.Build.Dependency,
+const StaticCurl = struct {
     curl: *std.Build.Dependency,
     mbedtls: *std.Build.Dependency,
     nghttp2: *std.Build.Dependency,
     zlib: *std.Build.Dependency,
+};
+
+const Deps = struct {
+    jsoncons: *std.Build.Dependency,
+    cpr: *std.Build.Dependency,
+    /// Present only when -Dstatic-curl=true. Lazy, so an ordinary build does
+    /// not fetch curl, mbedtls, nghttp2 and zlib to leave them unused.
+    static_curl: ?StaticCurl,
     /// Directory holding the generated sql_resources.hpp.
     sql_resources_dir: std.Build.LazyPath,
 };
@@ -440,30 +446,40 @@ fn addCore(b: *std.Build, mod: *std.Build.Module, d: Deps) void {
     mod.link_libcpp = true;
 }
 
-/// Compile libcurl and mbedtls from source, statically.
+/// Provide libcurl, one of two ways.
 ///
-/// The alternative was linking the host's libcurl, which made the artifact
-/// depend on a library whose TLS backend, protocol support and compression
-/// vary per machine, and which cannot be cross-compiled without a sysroot.
-/// For anything published — where the target machine is not ours — a
-/// self-contained binary is the only honest option.
+/// **System (default).** One line, no CMake ever, and the library is whatever
+/// the machine's own package manager installed — patched by the vendor,
+/// approved by whoever approves such things. The right answer when you control
+/// the machines that will load this.
+///
+/// **Static (`-Dstatic-curl=true`).** curl, mbedtls, nghttp2 and zlib compiled
+/// in, with a deliberately narrow feature set. The right answer when you do
+/// not control those machines: a published extension cannot depend on a
+/// libcurl whose TLS backend, protocol support and compression vary per host,
+/// and Windows and WASM have no system libcurl at all. The cost is owning
+/// curl's CVE stream and regenerating config headers per platform.
 ///
 /// `curl_config.h` is NOT hand-derived. curl's ~200 feature defines are
-/// interdependent, and writing them by hand is a good way to produce a curl
-/// that compiles and then misbehaves. It was generated once by curl's own
-/// CMake with the flags recorded in third_party/curl_config/README.md, and
-/// committed. So the config is machine-generated but the build stays pure
-/// Zig — no CMake at build time, and `-Dtarget=` keeps working.
-///
-/// One config per platform, because the HAVE_* probes genuinely differ.
+/// interdependent and its HAVE_* entries are real compile-and-link probes, so
+/// writing them by hand produces a curl that compiles and then misbehaves. It
+/// was generated once by curl's own CMake with the flags in
+/// third_party/curl_config/README.md, and committed — machine-produced config,
+/// but no CMake at build time and `-Dtarget=` still works.
 fn addCurl(b: *std.Build, mod: *std.Build.Module, d: Deps) void {
-    mod.addIncludePath(d.curl.path("include"));
-    mod.addIncludePath(d.curl.path("lib"));
+    const sc = d.static_curl orelse {
+        // OPENSSL_BACKEND_USED is deliberately not defined: it only enables
+        // cpr's SSL_CTX callback, and nothing here sets one.
+        mod.linkSystemLibrary("curl", .{});
+        return;
+    };
+    mod.addIncludePath(sc.curl.path("include"));
+    mod.addIncludePath(sc.curl.path("lib"));
     mod.addIncludePath(b.path("third_party/curl_config/macos_arm64"));
-    mod.addIncludePath(d.mbedtls.path("include"));
-    mod.addIncludePath(d.nghttp2.path("lib/includes"));
+    mod.addIncludePath(sc.mbedtls.path("include"));
+    mod.addIncludePath(sc.nghttp2.path("lib/includes"));
     mod.addIncludePath(b.path("third_party/nghttp2_config"));
-    mod.addIncludePath(d.zlib.path("."));
+    mod.addIncludePath(sc.zlib.path("."));
     mod.addIncludePath(b.path("third_party/zlib_config"));
 
     mod.addCMacro("BUILDING_LIBCURL", "1");
@@ -471,18 +487,18 @@ fn addCurl(b: *std.Build, mod: *std.Build.Module, d: Deps) void {
     mod.addCMacro("CURL_STATICLIB", "1");
     mod.addCMacro("HAVE_CONFIG_H", "1");
 
-    mod.addCSourceFiles(.{ .root = d.curl.path("."), .files = curl_sources, .flags = curl_flags });
+    mod.addCSourceFiles(.{ .root = sc.curl.path("."), .files = curl_sources, .flags = curl_flags });
     mod.addCSourceFiles(.{
-        .root = d.mbedtls.path("."),
+        .root = sc.mbedtls.path("."),
         .files = mbedtls_sources,
         .flags = mbedtls_flags,
     });
     mod.addCSourceFiles(.{
-        .root = d.nghttp2.path("."),
+        .root = sc.nghttp2.path("."),
         .files = nghttp2_sources,
         .flags = &.{ "-std=c11", "-DHAVE_CONFIG_H" },
     });
-    mod.addCSourceFiles(.{ .root = d.zlib.path("."), .files = zlib_sources, .flags = curl_flags });
+    mod.addCSourceFiles(.{ .root = sc.zlib.path("."), .files = zlib_sources, .flags = curl_flags });
 }
 
 pub fn build(b: *std.Build) void {
@@ -490,6 +506,12 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const bz = b.dependency("blobzig", .{ .target = target, .optimize = optimize });
+
+    // Default false: linking the machine's own libcurl is the right choice
+    // when you control the machines, and it needs no CMake and no per-platform
+    // config. Turn it on to publish. See addCurl.
+    const static_curl = b.option(bool, "static-curl",
+        "Compile curl, mbedtls, nghttp2 and zlib in, instead of linking the system libcurl") orelse false;
 
     const base = struct {
         fn mod(bld: *std.Build, t: std.Build.ResolvedTarget, o: std.builtin.OptimizeMode) *std.Build.Module {
@@ -523,10 +545,14 @@ pub fn build(b: *std.Build) void {
     const deps: Deps = .{
         .jsoncons = b.dependency("jsoncons", .{}),
         .cpr = b.dependency("cpr", .{}),
-        .curl = b.dependency("curl", .{}),
-        .mbedtls = b.dependency("mbedtls", .{}),
-        .nghttp2 = b.dependency("nghttp2", .{}),
-        .zlib = b.dependency("zlib", .{}),
+        .static_curl = if (!static_curl) null else .{
+            // lazyDependency returns null on the first run, when the package
+            // has yet to be fetched; the build re-runs itself afterwards.
+            .curl = b.lazyDependency("curl", .{}) orelse return,
+            .mbedtls = b.lazyDependency("mbedtls", .{}) orelse return,
+            .nghttp2 = b.lazyDependency("nghttp2", .{}) orelse return,
+            .zlib = b.lazyDependency("zlib", .{}) orelse return,
+        },
         .sql_resources_dir = sql_resources.dirname(),
     };
 
@@ -587,11 +613,14 @@ pub fn build(b: *std.Build) void {
         .core = core,
         .duckdb_module = duckdb_mod,
         .sqlite_module = sqlite_mod,
-        // The only symbols not in this artifact: two macOS system frameworks,
-        // resolved by dyld at load exactly as libSystem is. Named in full
-        // rather than by a loose "CF"/"SC" prefix so the caveat stays exactly
-        // as small as it is. Everything else — curl, mbedtls, cpr — is inside.
-        .allow_undefined = &.{ "CFRelease", "SCDynamicStoreCopyProxies" },
+        // Static: the only symbols outside the artifact are two macOS
+        // frameworks, named in full so the caveat stays as small as it is.
+        // System: libcurl is resolved from the host at load, as blobodbc
+        // resolves SQL* from the ODBC driver manager.
+        .allow_undefined = if (static_curl)
+            &.{ "CFRelease", "SCDynamicStoreCopyProxies" }
+        else
+            &.{"curl_"},
     });
     // curl reads macOS proxy settings via SCDynamicStoreCopyProxies, which
     // curl_setup.h enables automatically on Apple targets with IPv6. Both
@@ -601,7 +630,7 @@ pub fn build(b: *std.Build) void {
     //
     // Linked on the artifacts rather than the modules: on the module it did not
     // reach the final link step.
-    if (target.result.os.tag == .macos) {
+    if (static_curl and target.result.os.tag == .macos) {
         for ([_]?*std.Build.Step.Compile{ artifacts.lib, artifacts.duckdb, artifacts.sqlite }) |maybe| {
             if (maybe) |art| {
                 art.root_module.linkFramework("SystemConfiguration", .{});
@@ -626,7 +655,7 @@ pub fn build(b: *std.Build) void {
         .file = b.path("test/test_core_abi.c"),
         .flags = &.{"-std=c11"},
     });
-    if (target.result.os.tag == .macos) {
+    if (static_curl and target.result.os.tag == .macos) {
         t.root_module.linkFramework("SystemConfiguration", .{});
         t.root_module.linkFramework("CoreFoundation", .{});
     }

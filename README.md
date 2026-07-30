@@ -1018,13 +1018,39 @@ out["content"], out["stats"]["continuations"]
 ## Building
 
 Zig 0.16 (`brew install zig`) supplies the compilers and the build system.
-libcurl comes from the host: it is linked, not built, so the artifacts carry a
-hard dependency on the system `libcurl.4` and cannot be cross-compiled without
-a sysroot. Everything else — cpr, jsoncons, nlohmann/json — is compiled here.
 
 ```bash
-zig build
+zig build                      # link the system libcurl (default)
+zig build -Dstatic-curl=true   # compile curl, mbedtls, nghttp2 and zlib in
 ```
+
+### Which libcurl
+
+| | system (default) | `-Dstatic-curl=true` |
+|---|---|---|
+| libcurl | the machine's, vendor-patched | curl 8.11.1 compiled in |
+| TLS | whatever it was built with | mbedTLS 3.6.2, always |
+| HTTP/2, compression | if the host has them | nghttp2 + zlib, always |
+| link-time deps | `libcurl.4` | none beyond the OS |
+| cross-compiles | no | yes, given a config for the target |
+| needs CMake | never | once per platform, to regenerate configs |
+| artifact | ~34 MB | ~44 MB |
+
+**Use the default when you control the machines that will load this.** The
+system libcurl is patched by whoever patches such things, security fixes arrive
+without you rebuilding, and the build needs nothing but Zig.
+
+**Use `-Dstatic-curl=true` to publish.** An extension downloaded onto a machine
+you do not control cannot depend on a libcurl whose TLS backend, protocol
+support and compression vary per host — and Windows and WASM have no system
+libcurl at all. The price is owning curl's CVE stream and regenerating a
+`curl_config.h` per platform; see `third_party/curl_config/README.md`.
+
+The static build's feature set is deliberately narrow — HTTP and HTTPS only,
+with proxy, IPv6 and unix sockets kept. FTP, LDAP, SMTP, IMAP, POP3, SMB, RTSP,
+MQTT, telnet, dict, gopher, tftp, file and NTLM are all off: none is reachable
+through this extension's API, and each is attack surface in a library that
+parses hostile input for a living.
 
 | Artifact | What it is |
 |---|---|
