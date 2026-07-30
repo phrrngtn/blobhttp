@@ -154,31 +154,44 @@ char *bh_result_json(const bh_batch *b, size_t i);
  * something to express in SQL, and there is no reason SQLite and Python
  * should go without it.
  *
- * Both take one fully-resolved JSON object and return
+ * Both take one fully-resolved JSON object and return malloc'd JSON; free with
+ * bh_free, NULL on failure. The stats carried are http_requests,
+ * continuations, retries, prompt_tokens, completion_tokens, total_tokens,
+ * elapsed_seconds, model and finish_reason — a single logical call is often
+ * several HTTP round-trips once continuations and retries are counted, and the
+ * caller should be able to see that.
  *
- *     {"content": "...", "stats": {http_requests, continuations, retries,
- *                                  prompt_tokens, completion_tokens,
- *                                  total_tokens, elapsed_seconds, model,
- *                                  finish_reason}}
- *
- * Malloc'd; free with bh_free. NULL on failure.
+ * The two differ in their envelope, because bh_llm_adapt's is already
+ * user-visible through llm_adapt() and blobapi reads it. See each below.
  *
  * Callers that only want the text (the DuckDB _llm_complete_raw scalar, whose
- * VARCHAR return is fixed) read .content and drop the rest; nothing is lost at
- * the ABI.
+ * VARCHAR return is fixed) read the content field and drop the rest; nothing
+ * is lost at the ABI.
  */
 
 /*
- * NOT YET DECLARED: bh_llm_complete / bh_llm_adapt.
+ * Keys: url, body (the chat-completion request object), headers,
+ * http_config, output_schema, max_continuations, max_retries.
  *
- * The completion loop still lives in duckdb_ext/src/bhttp_llm.cpp, which
- * includes duckdb_extension.h. Its portable half — LlmStats,
- * PostChatCompletion, LlmCompleteLoop — is already free of DuckDB and is
- * declared in src/blobhttp_internal.hpp ready to move; only the scalar-function
- * glue below it is host-specific. Declaring the entry points here before they
- * are defined would turn every consumer's link into an error, so they arrive
- * with the move.
+ * Returns {"content": "...", "stats": {...}}.
  */
+char *bh_llm_complete(const char *request_json);
+
+/*
+ * As bh_llm_complete, but taking prompt_text / model / endpoint / max_tokens
+ * in place of a pre-built body, and accepting `response_jmespath` to reshape
+ * the result.
+ *
+ * The prompt is expected already rendered — in DuckDB the llm_adapt() macro
+ * looks the adapter up in the llm_adapter table and renders it with
+ * blobtemplates' bt_template_render() before calling this. That table lookup
+ * and templating stay in the macro layer, which is why only this half is here.
+ *
+ * Returns {"data": <parsed content, or the raw string>, "_meta": {...stats}} —
+ * NOT the {content, stats} shape above. That is what _llm_adapt_raw has always
+ * emitted and what blobapi's SQL reads, so it is frozen.
+ */
+char *bh_llm_adapt(const char *request_json);
 
 /* ================================================================== *
  *  Diagnostics and auth                                              *

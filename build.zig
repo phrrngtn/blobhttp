@@ -141,7 +141,10 @@ pub fn build(b: *std.Build) void {
     // usefully loud reminder that rewiring the adapters is the next step.
     const core = base(b, target, optimize);
     addCore(b, core, deps);
-    core.addCSourceFile(.{ .file = b.path("src/blobhttp_core.cpp"), .flags = cxx_flags });
+    core.addCSourceFiles(.{
+        .files = &.{ "src/blobhttp_core.cpp", "src/blobhttp_llm.cpp" },
+        .flags = cxx_flags,
+    });
 
     // ── DuckDB extension (C++ against the C API) ──────────────────────
     const duckdb_mod = base(b, target, optimize);
@@ -188,7 +191,10 @@ pub fn build(b: *std.Build) void {
         .root_module = base(b, target, optimize),
     });
     addCore(b, t.root_module, deps);
-    t.root_module.addCSourceFile(.{ .file = b.path("src/blobhttp_core.cpp"), .flags = cxx_flags });
+    t.root_module.addCSourceFiles(.{
+        .files = &.{ "src/blobhttp_core.cpp", "src/blobhttp_llm.cpp" },
+        .flags = cxx_flags,
+    });
     t.root_module.addCSourceFile(.{
         .file = b.path("test/test_core_abi.c"),
         .flags = &.{"-std=c11"},
