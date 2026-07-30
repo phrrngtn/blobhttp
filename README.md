@@ -61,7 +61,7 @@ LOAD 'path/to/bhttp.duckdb_extension';
 Or, if loading an unsigned extension:
 
 ```bash
-duckdb -unsigned -cmd "LOAD 'build/release/bhttp.duckdb_extension';"
+duckdb -unsigned -cmd "LOAD 'zig-out/lib/bhttp.duckdb_extension';"
 ```
 
 ### SQLite
@@ -981,20 +981,52 @@ SELECT count(*) FROM (
 
 ## Building
 
+Zig 0.16 (`brew install zig`) supplies the compilers and the build system.
+libcurl comes from the host: it is linked, not built, so the artifacts carry a
+hard dependency on the system `libcurl.4` and cannot be cross-compiled without
+a sysroot. Everything else — cpr, jsoncons, nlohmann/json — is compiled here.
+
 ```bash
-make
+zig build
 ```
 
-This configures cmake, builds the extension, and stamps the metadata for
-DuckDB to load it.
+| Artifact | What it is |
+|---|---|
+| `zig-out/lib/bhttp.duckdb_extension` | `LOAD` it in DuckDB |
+| `zig-out/lib/bhttp.so` / `.dylib` | `.load` it in SQLite |
+
+The DuckDB metadata footer is stamped by the build; there is no separate step.
+SQL macros in `sql/*.sql` are compiled in by `tools/embed_sql.zig`, so editing
+one and rebuilding is enough.
 
 ## Testing
 
 ### Automated tests
 
 ```bash
-make test_release
+# the local sqllogictest file needs no network
+python test/run_sqllogic.py zig-out/lib/bhttp.duckdb_extension \
+    test/sql/http_client_local.test
+
+# with the Flask concurrency server on :8444
+python test/flask_concurrency_server.py &
+python test/run_sqllogic.py zig-out/lib/bhttp.duckdb_extension \
+    test/sql/http_client_local.test test/sql/http_client_server.test
+pytest test/test_integration.py
 ```
+
+`test/run_sqllogic.py` handles the directives these files use (`require`,
+`statement ok`, `statement error`, `query`). It replaces the upstream
+`duckdb-sqllogictest` package, which installs a dist-info and no importable
+module.
+
+> `test/test_ratelimit.py` also needs `test/flask_ratelimit_server.py` (:8445)
+> and `test/flask_proxy_server.py` (:8446). Note that
+> `TestRateLimiterPacing::test_burst_allows_initial_spike` is flaky when the
+> whole file runs: earlier tests drain the process-wide token bucket, which is
+> the thing the test is trying to observe refilling. It passes in isolation.
+> This predates the Zig migration — measured at 3/5 runs failing on the old
+> CMake build and 4/5 on this one.
 
 The sqllogictest suite (`test/sql/`) covers error cases for
 Negotiate auth, table functions against httpbin.org, and scalar function usage
@@ -1028,7 +1060,7 @@ Endpoints:
 # Terminal 2: reset and run 10 requests with 0.3s delay each
 curl -s http://localhost:8444/reset > /dev/null
 
-duckdb -unsigned -cmd "LOAD 'build/release/bhttp.duckdb_extension';" -c "
+duckdb -unsigned -cmd "LOAD 'zig-out/lib/bhttp.duckdb_extension';" -c "
 SELECT id,
        json_extract(bh_http_request('GET',
            'http://localhost:8444/slow/' || id::VARCHAR || '?delay=0.3',
@@ -1049,7 +1081,7 @@ reports `peak_concurrent_connections: 10`.
 ```bash
 curl -s http://localhost:8444/reset > /dev/null
 
-duckdb -unsigned -cmd "LOAD 'build/release/bhttp.duckdb_extension';" -c "
+duckdb -unsigned -cmd "LOAD 'zig-out/lib/bhttp.duckdb_extension';" -c "
 SET VARIABLE bh_http_config = MAP {
     'default': '{\"max_concurrent\": 3, \"rate_limit\": \"100/s\"}'
 };
@@ -1095,7 +1127,7 @@ print(f'Batches: {len(batches)} (sizes: {[len(b) for b in batches]})')
 #### Verify rate limiter diagnostics after testing
 
 ```bash
-duckdb -unsigned -cmd "LOAD 'build/release/bhttp.duckdb_extension';" -c "
+duckdb -unsigned -cmd "LOAD 'zig-out/lib/bhttp.duckdb_extension';" -c "
 -- Run some requests first
 SELECT count(*) FROM (
     SELECT bh_http_request('GET', 'http://localhost:8444/fast', NULL, NULL, NULL)
@@ -1119,7 +1151,7 @@ A test server is included for end-to-end Negotiate authentication testing:
 python3 test/flask_negotiate_server.py
 
 # In another terminal
-duckdb -unsigned -cmd "LOAD 'build/release/bhttp.duckdb_extension';" -c "
+duckdb -unsigned -cmd "LOAD 'zig-out/lib/bhttp.duckdb_extension';" -c "
     -- Health check (no auth required)
     SELECT r.response_status_code
     FROM (SELECT bh_http_get('https://localhost:8443/health') AS r);

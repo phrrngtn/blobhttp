@@ -16,7 +16,7 @@ import urllib.request
 import duckdb
 import pytest
 
-EXTENSION_PATH = "build/release/bhttp.duckdb_extension"
+EXTENSION_PATH = "zig-out/lib/bhttp.duckdb_extension"
 TARGET_SERVER = "http://localhost:8445"
 PROXY_SERVER = "http://localhost:8446"
 

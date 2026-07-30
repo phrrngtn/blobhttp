@@ -15,3 +15,8 @@ python/blobhttp/*.so
 python/blobhttp/*.pyd
 python/blobhttp/*.dylib
 build_sqlite/
+dist/
+.zig-cache/
+zig-out/
+zig-pkg/
+*.egg-info/

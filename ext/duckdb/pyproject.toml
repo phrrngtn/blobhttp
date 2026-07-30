@@ -1,16 +1,23 @@
 [build-system]
-requires = ["scikit-build-core>=0.5"]
-build-backend = "scikit_build_core.build"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
 name = "blobhttp-duckdb"
 version = "0.2.2"
-description = "HTTP requests and LLM integration as SQL functions — Duckdb extension"
+description = "HTTP requests and LLM integration as SQL functions — DuckDB extension"
 requires-python = ">=3.8"
 license = {text = "MIT"}
 authors = [{name = "Paul Harrington"}]
 dependencies = []
 
-[tool.scikit-build]
-wheel.packages = ["blobhttp_duckdb"]
-sdist.include = ["src/**", "include/**", "duckdb_ext/**", "duckdb_capi/**", "sql/**", "cmake/**"]
+[tool.hatch.build.targets.wheel]
+packages = ["blobhttp_duckdb"]
+
+# No build step and no source list: hatch_build.py force-includes the artifact
+# `zig build` produced at the repo root, and stamps the platform tag. This
+# project used to carry its own CMakeLists plus symlinked copies of src/,
+# include/, duckdb_ext/, duckdb_capi/, sql/ and cmake/ in order to rebuild what
+# the root build had already produced.
+[tool.hatch.build.targets.wheel.hooks.custom]
+path = "hatch_build.py"

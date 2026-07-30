@@ -1,0 +1,18 @@
+.{
+    .name = .blobhttp,
+    .version = "0.1.0",
+    .fingerprint = 0x17961532683c2196,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .blobzig = .{ .path = "../blobzig" },
+        .jsoncons = .{
+            .url = "git+https://github.com/danielaparker/jsoncons?ref=v1.1.0#eee098be8f774f64527281d5beb9e90aa9b73e06",
+            .hash = "N-V-__8AAFoyvwDf-YUd1Fao5si6STwBX1FoPIu9TMOuPOe3",
+        },
+        .cpr = .{
+            .url = "git+https://github.com/libcpr/cpr?ref=1.11.2#dd967cb48ea6bcbad9f1da5ada0db8ac0d532c06",
+            .hash = "N-V-__8AAMNFDAC2ay5xFfuc-qOEM6BHTZ08SHflp78-xRXZ",
+        },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "src", "include", "third_party" },
+}
