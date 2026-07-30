@@ -1,16 +1,19 @@
 [build-system]
-requires = ["scikit-build-core>=0.5", "nanobind>=1.5"]
-build-backend = "scikit_build_core.build"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
 name = "blobhttp"
 version = "0.2.2"
 description = "Enterprise HTTP client with rate limiting, SPNEGO auth, and connection pooling"
 readme = "README.md"
-requires-python = ">=3.10"
+# 3.11 for the `X | None` annotations in the ctypes layer.
+requires-python = ">=3.11"
 license = {text = "MIT"}
 authors = [{name = "Paul Harrington"}]
-dependencies = []
+# blobzig is the family's shared ctypes plumbing (artifact discovery, the
+# c_void_p result convention) — pure Python, no native code of its own.
+dependencies = ["blobzig"]
 keywords = ["http", "spnego", "kerberos", "rate-limiting", "duckdb", "sqlite"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -21,14 +24,23 @@ classifiers = [
     "Topic :: Internet :: WWW/HTTP",
 ]
 
-[project.optional-dependencies]
-test = [
+# The wheel is pure Python plus the prebuilt shared libraries — no compile step
+# at install time, so no scikit-build-core, no nanobind, no CMake, and no
+# CPython-version matrix. Run `zig build` first.
+[tool.hatch.build.targets.wheel]
+packages = ["python/blobhttp"]
+
+# hatch_build.py stamps the platform tag and picks which of zig-out/lib belongs
+# in this wheel — that directory keeps artifacts from every target ever built.
+[tool.hatch.build.targets.wheel.hooks.custom]
+path = "hatch_build.py"
+
+[dependency-groups]
+dev = [
     "duckdb>=1.4.3",
     "flask>=3.0",
     "pytest>=8.0",
-    "duckdb-sqllogictest @ git+https://github.com/duckdb/duckdb-sqllogictest-python@2ac8dbc012ddbd96a57dca37784fd8ee3c0eb021",
 ]
 
-[tool.scikit-build]
-cmake.args = ["-DBUILD_PYTHON_BINDINGS=ON", "-DBUILD_DUCKDB_EXTENSION=OFF"]
-wheel.packages = ["python/blobhttp"]
+[tool.uv.sources]
+blobzig = { path = "../blobzig", editable = true }
