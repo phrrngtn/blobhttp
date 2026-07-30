@@ -60,9 +60,309 @@ const cpr_sources: []const []const u8 = &.{
     "cpr/util.cpp",
 };
 
+/// curl's whole lib tree. Every file is compiled and the CURL_DISABLE_*
+/// macros in curl_config.h hollow out the ones we do not want — that is how
+/// curl's own build works, so the feature set lives in the config header
+/// rather than in this list.
+const curl_sources: []const []const u8 = &.{
+    "lib/altsvc.c",
+    "lib/amigaos.c",
+    "lib/asyn-ares.c",
+    "lib/asyn-thread.c",
+    "lib/base64.c",
+    "lib/bufq.c",
+    "lib/bufref.c",
+    "lib/c-hyper.c",
+    "lib/cf-h1-proxy.c",
+    "lib/cf-h2-proxy.c",
+    "lib/cf-haproxy.c",
+    "lib/cf-https-connect.c",
+    "lib/cf-socket.c",
+    "lib/cfilters.c",
+    "lib/conncache.c",
+    "lib/connect.c",
+    "lib/content_encoding.c",
+    "lib/cookie.c",
+    "lib/curl_addrinfo.c",
+    "lib/curl_des.c",
+    "lib/curl_endian.c",
+    "lib/curl_fnmatch.c",
+    "lib/curl_get_line.c",
+    "lib/curl_gethostname.c",
+    "lib/curl_gssapi.c",
+    "lib/curl_memrchr.c",
+    "lib/curl_multibyte.c",
+    "lib/curl_ntlm_core.c",
+    "lib/curl_range.c",
+    "lib/curl_rtmp.c",
+    "lib/curl_sasl.c",
+    "lib/curl_sha512_256.c",
+    "lib/curl_sspi.c",
+    "lib/curl_threads.c",
+    "lib/curl_trc.c",
+    "lib/cw-out.c",
+    "lib/dict.c",
+    "lib/dllmain.c",
+    "lib/doh.c",
+    "lib/dynbuf.c",
+    "lib/dynhds.c",
+    "lib/easy.c",
+    "lib/easygetopt.c",
+    "lib/easyoptions.c",
+    "lib/escape.c",
+    "lib/file.c",
+    "lib/fileinfo.c",
+    "lib/fopen.c",
+    "lib/formdata.c",
+    "lib/ftp.c",
+    "lib/ftplistparser.c",
+    "lib/getenv.c",
+    "lib/getinfo.c",
+    "lib/gopher.c",
+    "lib/hash.c",
+    "lib/headers.c",
+    "lib/hmac.c",
+    "lib/hostasyn.c",
+    "lib/hostip.c",
+    "lib/hostip4.c",
+    "lib/hostip6.c",
+    "lib/hostsyn.c",
+    "lib/hsts.c",
+    "lib/http.c",
+    "lib/http1.c",
+    "lib/http2.c",
+    "lib/http_aws_sigv4.c",
+    "lib/http_chunks.c",
+    "lib/http_digest.c",
+    "lib/http_negotiate.c",
+    "lib/http_ntlm.c",
+    "lib/http_proxy.c",
+    "lib/idn.c",
+    "lib/if2ip.c",
+    "lib/imap.c",
+    "lib/inet_ntop.c",
+    "lib/inet_pton.c",
+    "lib/krb5.c",
+    "lib/ldap.c",
+    "lib/llist.c",
+    "lib/macos.c",
+    "lib/md4.c",
+    "lib/md5.c",
+    "lib/memdebug.c",
+    "lib/mime.c",
+    "lib/mprintf.c",
+    "lib/mqtt.c",
+    "lib/multi.c",
+    "lib/netrc.c",
+    "lib/nonblock.c",
+    "lib/noproxy.c",
+    "lib/openldap.c",
+    "lib/parsedate.c",
+    "lib/pingpong.c",
+    "lib/pop3.c",
+    "lib/progress.c",
+    "lib/psl.c",
+    "lib/rand.c",
+    "lib/rename.c",
+    "lib/request.c",
+    "lib/rtsp.c",
+    "lib/select.c",
+    "lib/sendf.c",
+    "lib/setopt.c",
+    "lib/sha256.c",
+    "lib/share.c",
+    "lib/slist.c",
+    "lib/smb.c",
+    "lib/smtp.c",
+    "lib/socketpair.c",
+    "lib/socks.c",
+    "lib/socks_gssapi.c",
+    "lib/socks_sspi.c",
+    "lib/speedcheck.c",
+    "lib/splay.c",
+    "lib/strcase.c",
+    "lib/strdup.c",
+    "lib/strerror.c",
+    "lib/strtok.c",
+    "lib/strtoofft.c",
+    "lib/system_win32.c",
+    "lib/telnet.c",
+    "lib/tftp.c",
+    "lib/timediff.c",
+    "lib/timeval.c",
+    "lib/transfer.c",
+    "lib/url.c",
+    "lib/urlapi.c",
+    "lib/version.c",
+    "lib/version_win32.c",
+    "lib/warnless.c",
+    "lib/ws.c",
+    "lib/vtls/bearssl.c",
+    "lib/vtls/cipher_suite.c",
+    "lib/vtls/gtls.c",
+    "lib/vtls/hostcheck.c",
+    "lib/vtls/keylog.c",
+    "lib/vtls/mbedtls.c",
+    "lib/vtls/mbedtls_threadlock.c",
+    "lib/vtls/openssl.c",
+    "lib/vtls/rustls.c",
+    "lib/vtls/schannel.c",
+    "lib/vtls/schannel_verify.c",
+    "lib/vtls/sectransp.c",
+    "lib/vtls/vtls.c",
+    "lib/vtls/wolfssl.c",
+    "lib/vtls/x509asn1.c",
+    "lib/vauth/cleartext.c",
+    "lib/vauth/cram.c",
+    "lib/vauth/digest.c",
+    "lib/vauth/digest_sspi.c",
+    "lib/vauth/gsasl.c",
+    "lib/vauth/krb5_gssapi.c",
+    "lib/vauth/krb5_sspi.c",
+    "lib/vauth/ntlm.c",
+    "lib/vauth/ntlm_sspi.c",
+    "lib/vauth/oauth2.c",
+    "lib/vauth/spnego_gssapi.c",
+    "lib/vauth/spnego_sspi.c",
+    "lib/vauth/vauth.c",
+    "lib/vquic/curl_msh3.c",
+    "lib/vquic/curl_ngtcp2.c",
+    "lib/vquic/curl_osslq.c",
+    "lib/vquic/curl_quiche.c",
+    "lib/vquic/vquic-tls.c",
+    "lib/vquic/vquic.c",
+    "lib/vssh/curl_path.c",
+    "lib/vssh/libssh.c",
+    "lib/vssh/libssh2.c",
+    "lib/vssh/wolfssh.c",
+};
+
+/// mbedtls, which ships a usable default config rather than generating one.
+const mbedtls_sources: []const []const u8 = &.{
+    "library/aes.c",
+    "library/aesce.c",
+    "library/aesni.c",
+    "library/aria.c",
+    "library/asn1parse.c",
+    "library/asn1write.c",
+    "library/base64.c",
+    "library/bignum.c",
+    "library/bignum_core.c",
+    "library/bignum_mod.c",
+    "library/bignum_mod_raw.c",
+    "library/block_cipher.c",
+    "library/camellia.c",
+    "library/ccm.c",
+    "library/chacha20.c",
+    "library/chachapoly.c",
+    "library/cipher.c",
+    "library/cipher_wrap.c",
+    "library/cmac.c",
+    "library/constant_time.c",
+    "library/ctr_drbg.c",
+    "library/debug.c",
+    "library/des.c",
+    "library/dhm.c",
+    "library/ecdh.c",
+    "library/ecdsa.c",
+    "library/ecjpake.c",
+    "library/ecp.c",
+    "library/ecp_curves.c",
+    "library/ecp_curves_new.c",
+    "library/entropy.c",
+    "library/entropy_poll.c",
+    "library/error.c",
+    "library/gcm.c",
+    "library/hkdf.c",
+    "library/hmac_drbg.c",
+    "library/lmots.c",
+    "library/lms.c",
+    "library/md.c",
+    "library/md5.c",
+    "library/memory_buffer_alloc.c",
+    "library/mps_reader.c",
+    "library/mps_trace.c",
+    "library/net_sockets.c",
+    "library/nist_kw.c",
+    "library/oid.c",
+    "library/padlock.c",
+    "library/pem.c",
+    "library/pk.c",
+    "library/pk_ecc.c",
+    "library/pk_wrap.c",
+    "library/pkcs12.c",
+    "library/pkcs5.c",
+    "library/pkcs7.c",
+    "library/pkparse.c",
+    "library/pkwrite.c",
+    "library/platform.c",
+    "library/platform_util.c",
+    "library/poly1305.c",
+    "library/psa_crypto.c",
+    "library/psa_crypto_aead.c",
+    "library/psa_crypto_cipher.c",
+    "library/psa_crypto_client.c",
+    "library/psa_crypto_driver_wrappers_no_static.c",
+    "library/psa_crypto_ecp.c",
+    "library/psa_crypto_ffdh.c",
+    "library/psa_crypto_hash.c",
+    "library/psa_crypto_mac.c",
+    "library/psa_crypto_pake.c",
+    "library/psa_crypto_rsa.c",
+    "library/psa_crypto_se.c",
+    "library/psa_crypto_slot_management.c",
+    "library/psa_crypto_storage.c",
+    "library/psa_its_file.c",
+    "library/psa_util.c",
+    "library/ripemd160.c",
+    "library/rsa.c",
+    "library/rsa_alt_helpers.c",
+    "library/sha1.c",
+    "library/sha256.c",
+    "library/sha3.c",
+    "library/sha512.c",
+    "library/ssl_cache.c",
+    "library/ssl_ciphersuites.c",
+    "library/ssl_client.c",
+    "library/ssl_cookie.c",
+    "library/ssl_debug_helpers_generated.c",
+    "library/ssl_msg.c",
+    "library/ssl_ticket.c",
+    "library/ssl_tls.c",
+    "library/ssl_tls12_client.c",
+    "library/ssl_tls12_server.c",
+    "library/ssl_tls13_client.c",
+    "library/ssl_tls13_generic.c",
+    "library/ssl_tls13_keys.c",
+    "library/ssl_tls13_server.c",
+    "library/threading.c",
+    "library/timing.c",
+    "library/version.c",
+    "library/version_features.c",
+    "library/x509.c",
+    "library/x509_create.c",
+    "library/x509_crl.c",
+    "library/x509_crt.c",
+    "library/x509_csr.c",
+    "library/x509write.c",
+    "library/x509write_crt.c",
+    "library/x509write_csr.c",
+};
+
+/// mbedtls 3.6.2 does not compile clean under current clang — it trips
+/// -Wunterminated-string-initialization in ssl_tls13_keys.c, which its own
+/// build promotes to an error. Upstream's, not ours, and the same shape as
+/// jsoncons' literal-operator spelling: a library pinned in the CMake era
+/// meeting a newer compiler.
+const mbedtls_flags: []const []const u8 = &.{ "-std=c11", "-Wno-unterminated-string-initialization" };
+
+const curl_flags: []const []const u8 = &.{"-std=c11"};
+
 const Deps = struct {
     jsoncons: *std.Build.Dependency,
     cpr: *std.Build.Dependency,
+    curl: *std.Build.Dependency,
+    mbedtls: *std.Build.Dependency,
     /// Directory holding the generated sql_resources.hpp.
     sql_resources_dir: std.Build.LazyPath,
 };
@@ -84,12 +384,42 @@ fn addCore(b: *std.Build, mod: *std.Build.Module, d: Deps) void {
     });
     mod.addCSourceFile(.{ .file = b.path("src/negotiate_auth.cpp"), .flags = cxx_flags });
 
-    // libcurl comes from the host. OPENSSL_BACKEND_USED is deliberately NOT
-    // defined: it only enables cpr's SSL_CTX callback, and nothing here sets
-    // one — the SSL surface used is CaInfo/CertFile/KeyFile/VerifySsl, which
-    // are plain curl options on any backend.
-    mod.linkSystemLibrary("curl", .{});
+    addCurl(b, mod, d);
     mod.link_libcpp = true;
+}
+
+/// Compile libcurl and mbedtls from source, statically.
+///
+/// The alternative was linking the host's libcurl, which made the artifact
+/// depend on a library whose TLS backend, protocol support and compression
+/// vary per machine, and which cannot be cross-compiled without a sysroot.
+/// For anything published — where the target machine is not ours — a
+/// self-contained binary is the only honest option.
+///
+/// `curl_config.h` is NOT hand-derived. curl's ~200 feature defines are
+/// interdependent, and writing them by hand is a good way to produce a curl
+/// that compiles and then misbehaves. It was generated once by curl's own
+/// CMake with the flags recorded in third_party/curl_config/README.md, and
+/// committed. So the config is machine-generated but the build stays pure
+/// Zig — no CMake at build time, and `-Dtarget=` keeps working.
+///
+/// One config per platform, because the HAVE_* probes genuinely differ.
+fn addCurl(b: *std.Build, mod: *std.Build.Module, d: Deps) void {
+    mod.addIncludePath(d.curl.path("include"));
+    mod.addIncludePath(d.curl.path("lib"));
+    mod.addIncludePath(b.path("third_party/curl_config/macos_arm64"));
+    mod.addIncludePath(d.mbedtls.path("include"));
+
+    mod.addCMacro("BUILDING_LIBCURL", "1");
+    mod.addCMacro("CURL_STATICLIB", "1");
+    mod.addCMacro("HAVE_CONFIG_H", "1");
+
+    mod.addCSourceFiles(.{ .root = d.curl.path("."), .files = curl_sources, .flags = curl_flags });
+    mod.addCSourceFiles(.{
+        .root = d.mbedtls.path("."),
+        .files = mbedtls_sources,
+        .flags = mbedtls_flags,
+    });
 }
 
 pub fn build(b: *std.Build) void {
@@ -130,6 +460,8 @@ pub fn build(b: *std.Build) void {
     const deps: Deps = .{
         .jsoncons = b.dependency("jsoncons", .{}),
         .cpr = b.dependency("cpr", .{}),
+        .curl = b.dependency("curl", .{}),
+        .mbedtls = b.dependency("mbedtls", .{}),
         .sql_resources_dir = sql_resources.dirname(),
     };
 
@@ -190,11 +522,29 @@ pub fn build(b: *std.Build) void {
         .core = core,
         .duckdb_module = duckdb_mod,
         .sqlite_module = sqlite_mod,
-        // libcurl is resolved from the host process, exactly as blobodbc
-        // resolves SQL* from the ODBC driver manager. Listing it here is the
-        // documentation that this artifact is not self-contained.
-        .allow_undefined = &.{"curl_"},
+        // The only symbols not in this artifact: two macOS system frameworks,
+        // resolved by dyld at load exactly as libSystem is. Named in full
+        // rather than by a loose "CF"/"SC" prefix so the caveat stays exactly
+        // as small as it is. Everything else — curl, mbedtls, cpr — is inside.
+        .allow_undefined = &.{ "CFRelease", "SCDynamicStoreCopyProxies" },
     });
+    // curl reads macOS proxy settings via SCDynamicStoreCopyProxies, which
+    // curl_setup.h enables automatically on Apple targets with IPv6. Both
+    // frameworks ship with the OS exactly as libSystem does, so this costs
+    // nothing in self-containment — and the alternative, disabling the lookup,
+    // would silently ignore a proxy the user set in System Settings.
+    //
+    // Linked on the artifacts rather than the modules: on the module it did not
+    // reach the final link step.
+    if (target.result.os.tag == .macos) {
+        for ([_]?*std.Build.Step.Compile{ artifacts.lib, artifacts.duckdb, artifacts.sqlite }) |maybe| {
+            if (maybe) |art| {
+                art.root_module.linkFramework("SystemConfiguration", .{});
+                art.root_module.linkFramework("CoreFoundation", .{});
+            }
+        }
+    }
+
     artifacts.lib.?.installHeader(b.path("include/blobhttp.h"), "blobhttp.h");
 
     // ── C test for the core ABI, with no host involved ────────────────
@@ -211,6 +561,10 @@ pub fn build(b: *std.Build) void {
         .file = b.path("test/test_core_abi.c"),
         .flags = &.{"-std=c11"},
     });
+    if (target.result.os.tag == .macos) {
+        t.root_module.linkFramework("SystemConfiguration", .{});
+        t.root_module.linkFramework("CoreFoundation", .{});
+    }
     b.installArtifact(t);
     b.step("test-core", "Exercise the C ABI directly (needs the network)")
         .dependOn(&b.addRunArtifact(t).step);

@@ -13,6 +13,14 @@
             .url = "git+https://github.com/libcpr/cpr?ref=1.11.2#dd967cb48ea6bcbad9f1da5ada0db8ac0d532c06",
             .hash = "N-V-__8AAMNFDAC2ay5xFfuc-qOEM6BHTZ08SHflp78-xRXZ",
         },
+        .curl = .{
+            .url = "git+https://github.com/curl/curl?ref=curl-8_11_1#75a2079d5c28debb2eaa848ca9430f1fe0d7844c",
+            .hash = "N-V-__8AAHoXDAEjSY3M_WL7jxMfiYYUJ-aaJqO_jUK-kNnW",
+        },
+        .mbedtls = .{
+            .url = "git+https://github.com/Mbed-TLS/mbedtls?ref=v3.6.2#107ea89daaefb9867ea9121002fbbdf926780e98",
+            .hash = "N-V-__8AAPnFhALfI8HonTAfQwJlGPkOdcv9kdkvnmLlJDJo",
+        },
     },
     .paths = .{ "build.zig", "build.zig.zon", "src", "include", "third_party" },
 }
