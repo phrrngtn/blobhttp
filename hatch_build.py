@@ -34,7 +34,11 @@ from pathlib import Path
 
 from hatchling.builders.hooks.plugin.interface import BuildHookInterface
 
-PACKAGE = "bhttp"
+# The Python package directory, which is NOT the artifact name: the artifacts
+# are bhttp.* (the SQL function prefix) while the importable package is
+# blobhttp. Getting this wrong puts the libraries in a directory nothing looks
+# in, and the wheel installs cleanly and fails at first import.
+PACKAGE = "blobhttp"
 
 
 def _host_platform_tag() -> str:
