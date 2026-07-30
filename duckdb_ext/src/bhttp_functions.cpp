@@ -1,12 +1,13 @@
 #include "duckdb_extension.h"
 #include "bhttp_ext.hpp"
+// The C ABI is the whole dependency, as in sqlite_ext. No cpr, no rate
+// limiter, no HttpConfig — everything not about DuckDB's own vectors lives in
+// the core.
 #include "blobhttp.h"
-#include "blobhttp_internal.hpp"
-#include "http_config.hpp"
-#include "rate_limiter.hpp"
 
 #include <algorithm>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -382,24 +383,32 @@ static void DestroyRateLimitStatsData(void *data) {
 }
 
 static void RateLimitStatsBind(duckdb_bind_info info) {
-	// Snapshot the stats at bind time
+	// Snapshot at bind time, through the ABI rather than by reaching into the
+	// limiters. That keeps one definition of what a stats row contains — this
+	// used to restate the fifteen fields, and SQLite restated them again, so a
+	// new counter meant editing three places or silently having two answers.
+	//
+	// Materialising here rather than in the scan is also what keeps the batch
+	// lifetime simple: the scan function is called repeatedly and only ever
+	// reads these owned rows.
 	auto *data = new RateLimitStatsData();
-	auto snapshot = [](const std::string &host, GCRARateLimiter &limiter) -> RateLimitStatsData::HostStats {
-		return {host, limiter.RateSpec(), limiter.Rate(), limiter.Burst(), limiter.Requests(),
-		    limiter.Paced(), limiter.TotalWaitSeconds(), limiter.Throttled429(), limiter.BacklogSeconds(),
-		    limiter.TotalResponses(), limiter.TotalResponseBytes(), limiter.TotalElapsed(),
-		    limiter.MinElapsed(), limiter.MaxElapsed(), limiter.Errors()};
-	};
-
-	// Include the global limiter as a special "(global)" row if configured
-	auto *global = GlobalLimiterSnapshot();
-	if (global) {
-		data->rows.push_back(snapshot("(global)", *global));
+	{
+		std::unique_ptr<char, void (*)(void *)> json(bh_rate_limit_stats_json(), bh_free);
+		if (json) {
+			for (auto &e : nlohmann::json::parse(json.get())) {
+				data->rows.push_back({
+				    e.value("host", ""), e.value("rate_limit", ""),
+				    e.value("rate_rps", 0.0), e.value("burst", 0.0),
+				    e.value("requests", uint64_t{0}), e.value("paced", uint64_t{0}),
+				    e.value("total_wait_seconds", 0.0), e.value("throttled_429", uint64_t{0}),
+				    e.value("backlog_seconds", 0.0), e.value("total_responses", uint64_t{0}),
+				    e.value("total_response_bytes", uint64_t{0}),
+				    e.value("total_elapsed", 0.0), e.value("min_elapsed", 0.0),
+				    e.value("max_elapsed", 0.0), e.value("errors", uint64_t{0}),
+				});
+			}
+		}
 	}
-
-	Registry().ForEach([&](const std::string &host, GCRARateLimiter &limiter) {
-		data->rows.push_back(snapshot(host, limiter));
-	});
 
 	duckdb_logical_type varchar_type = duckdb_create_logical_type(DUCKDB_TYPE_VARCHAR);
 	duckdb_logical_type bigint_type = duckdb_create_logical_type(DUCKDB_TYPE_BIGINT);

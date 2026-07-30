@@ -2,7 +2,10 @@
 #include "bhttp_ext.hpp"
 #include "bhttp_llm.hpp"
 #include "bhttp_llm_adapt.hpp"
-#include "negotiate_auth.hpp"
+#include "blobhttp.h"
+
+#include <cstring>
+#include <memory>
 
 #include <cstring>
 #include <string>
@@ -23,20 +26,16 @@ static void NegotiateAuthTokenFunc(duckdb_function_info info, duckdb_data_chunk 
 	auto url_data = (duckdb_string_t *)duckdb_vector_get_data(url_vec);
 
 	for (idx_t row = 0; row < input_size; row++) {
-		auto url_str = duckdb_string_t_data(&url_data[row]);
-		auto url_len = duckdb_string_t_length(url_data[row]);
-
-		std::string url(url_str, url_len);
-		std::string error_msg;
-
-		try {
-			auto result = blobhttp::GenerateNegotiateToken(url);
-			std::string header = "Negotiate " + result.token;
-			duckdb_vector_assign_string_element_len(output, row, header.c_str(), header.length());
-		} catch (const std::exception &e) {
-			duckdb_scalar_function_set_error(info, e.what());
+		std::string url(duckdb_string_t_data(&url_data[row]),
+		                duckdb_string_t_length(url_data[row]));
+		std::unique_ptr<char, void (*)(void *)> header(
+		    bh_negotiate_auth_header(url.c_str()), bh_free);
+		if (!header) {
+			duckdb_scalar_function_set_error(info, bh_errmsg());
 			return;
 		}
+		duckdb_vector_assign_string_element_len(output, row, header.get(),
+		                                        std::strlen(header.get()));
 	}
 }
 
@@ -56,25 +55,14 @@ static void NegotiateAuthTokenJsonFunc(duckdb_function_info info, duckdb_data_ch
 		auto url_len = duckdb_string_t_length(url_data[row]);
 
 		std::string url(url_str, url_len);
-
-		try {
-			auto result = blobhttp::GenerateNegotiateToken(url);
-
-			nlohmann::json j;
-			j["token"] = result.token;
-			j["header"] = "Negotiate " + result.token;
-			j["url"] = result.url;
-			j["hostname"] = result.hostname;
-			j["spn"] = result.spn;
-			j["provider"] = result.provider;
-			j["library"] = result.library;
-
-			auto json_str = j.dump();
-			duckdb_vector_assign_string_element_len(output, row, json_str.c_str(), json_str.length());
-		} catch (const std::exception &e) {
-			duckdb_scalar_function_set_error(info, e.what());
+		std::unique_ptr<char, void (*)(void *)> json(
+		    bh_negotiate_auth_header_json(url.c_str()), bh_free);
+		if (!json) {
+			duckdb_scalar_function_set_error(info, bh_errmsg());
 			return;
 		}
+		duckdb_vector_assign_string_element_len(output, row, json.get(),
+		                                        std::strlen(json.get()));
 	}
 }
 
