@@ -1,0 +1,167 @@
+# Canonical CI workflow for the blob* family.
+#
+# This file is the source of truth. `blobzig/tools/sync_ci.sh` copies it into
+# every repo as `.forgejo/workflows/ci.yml`, so a change here reaches all of
+# them rather than twelve copies drifting apart.
+#
+# Two runners, matching the two platforms actually used:
+#
+#   linux-x86_64  dc1, Docker, the `blob-builder` image (has zig, go, g++,
+#                 duckdb, sqlite3)
+#   macos-arm64   gfe, running on the host, so this is native Apple Silicon
+#
+# There is a third runner registered — `linux-arm64` on gfe via Docker — which
+# is deliberately not used here: it duplicates dc1's coverage on slower
+# hardware, and it has been failing to reach the server for days.
+#
+# Nothing here is repo-specific. The test step is discovered from
+# `zig build --list-steps`, because repos legitimately differ: `test-c`,
+# `test`, `test-core`, or none.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      # Don't cancel the other platform when one fails — knowing whether a
+      # failure is platform-specific is most of the diagnosis.
+      fail-fast: false
+      matrix:
+        include:
+          - runner: linux-x86_64
+            label: linux-x86_64 (dc1)
+          - runner: macos-arm64
+            label: macos-arm64 (gfe)
+
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          zig version
+          echo "runner: ${{ matrix.label }}"
+
+      - name: Build
+        run: zig build --summary all
+
+      - name: Test
+        run: |
+          # Repos expose different test steps, and some none at all. Ask rather
+          # than assume: a hardcoded step name would fail on the repos that use
+          # a different one, and silently skip nothing on those that have none.
+          steps=$(zig build --list-steps 2>/dev/null | awk '{print $1}')
+          ran=0
+          for s in test test-c test-core; do
+            if echo "$steps" | grep -qx "$s"; then
+              echo "── zig build $s ──"
+              zig build "$s"
+              ran=1
+            fi
+          done
+          [ "$ran" = "1" ] || echo "no test step in this repo — build-only"
+
+      - name: Artifacts present
+        run: |
+          # `zig build` exiting 0 is not proof it produced anything: a mis-wired
+          # install step can succeed and emit nothing.
+          ls -la zig-out/lib/ 2>/dev/null || true
+          n=$(ls zig-out/lib 2>/dev/null | wc -l | tr -d ' ')
+          if [ "$n" = "0" ] && [ "${{ github.event.repository.name }}" != "blobzig" ]; then
+            echo "no artifacts in zig-out/lib" >&2
+            exit 1
+          fi
+          echo "$n artifact(s)"
+
+      - name: Extensions load
+        run: |
+          # The check that matters. An extension can link cleanly and still fail
+          # at dlopen; check_undefined catches most of that at build time, but
+          # actually loading it into both hosts is the real proof.
+          name=$(ls zig-out/lib/*.duckdb_extension 2>/dev/null | head -1)
+          if [ -n "$name" ] && command -v duckdb >/dev/null; then
+            duckdb -unsigned -c "LOAD '$name'; SELECT 'duckdb ok';"
+          else
+            echo "skipped: no duckdb extension or no duckdb CLI"
+          fi
+
+          sq=$(ls zig-out/lib/*.so zig-out/lib/*.dylib 2>/dev/null \
+               | grep -v '^.*/lib[^/]*$' | head -1)
+          if [ -n "$sq" ] && command -v sqlite3 >/dev/null; then
+            # macOS system sqlite3 has extension loading disabled; the Homebrew
+            # one does not. Prefer it when present.
+            SQ=$(ls /opt/homebrew/opt/sqlite/bin/sqlite3 2>/dev/null || command -v sqlite3)
+            "$SQ" :memory: ".load ${sq%.*}" "SELECT 'sqlite ok';"
+          else
+            echo "skipped: no sqlite extension or no sqlite3 CLI"
+          fi
+
+  wheel:
+    name: wheel ${{ matrix.label }}
+    runs-on: ${{ matrix.runner }}
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: linux-x86_64
+            label: linux-x86_64 (dc1)
+            # dc1 is Ubuntu 24.04, glibc 2.39. Tagging manylinux_2_17 would be
+            # a lie the installer only discovers at import; PEP 600 tags are
+            # honest about the floor actually required.
+            platform: manylinux_2_39_x86_64
+          - runner: macos-arm64
+            label: macos-arm64 (gfe)
+            # Empty: hatch_build.py infers the tag from the host, which is
+            # correct for a native build and avoids hardcoding an OS version.
+            platform: ""
+
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+
+      - name: Skip if this repo has no ctypes wheel yet
+        id: check
+        run: |
+          # The wheel is py3-none-<platform>: platform-specific because it
+          # carries a native library, ABI-agnostic because ctypes binds at
+          # runtime rather than against the CPython C API. That is only true
+          # once a repo is off nanobind, so check rather than assume.
+          if [ -f hatch_build.py ] && grep -q 'hatchling.build' pyproject.toml 2>/dev/null; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "still on the nanobind/scikit-build path — no wheel built"
+          fi
+
+      - name: Build the release artifacts
+        if: steps.check.outputs.ready == 'true'
+        run: zig build -Doptimize=ReleaseFast
+
+      - name: Build wheel
+        if: steps.check.outputs.ready == 'true'
+        env:
+          BLOB_WHEEL_PLATFORM: ${{ matrix.platform }}
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh || true
+          export PATH="$HOME/.local/bin:$PATH"
+          uv build --wheel
+
+      - name: Show what was produced
+        if: steps.check.outputs.ready == 'true'
+        run: |
+          ls -la dist/
+          # One wheel per platform, not one per interpreter. If a py3.11/3.12/...
+          # matrix ever reappears here, something has regressed to nanobind.
+          for w in dist/*.whl; do
+            case "$w" in
+              *py3-none-*) echo "ok: $(basename "$w")" ;;
+              *) echo "unexpected ABI-specific wheel: $(basename "$w")" >&2; exit 1 ;;
+            esac
+          done
