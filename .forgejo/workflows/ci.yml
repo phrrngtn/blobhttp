@@ -107,84 +107,42 @@ jobs:
         run: |
           # The check that matters. An extension can link cleanly and still fail
           # at dlopen; check_undefined catches most of that at build time, but
-          # actually loading it into both hosts is the real proof.
-          name=$(ls zig-out/lib/*.duckdb_extension 2>/dev/null | head -1)
-          if [ -n "$name" ] && command -v duckdb >/dev/null; then
-            duckdb -unsigned -c "LOAD '$name'; SELECT 'duckdb ok';"
+          # loading it into both hosts is the real proof.
+          #
+          # No `ls` with globs here. Forgejo runs steps under `set -eo pipefail`,
+          # and `ls a.so a.dylib` on Linux gets a literal unmatched *.dylib,
+          # exits 2, and kills the step — even though the pipeline's *output*
+          # was correct. That cost a full red run to find, because the step had
+          # already printed "duckdb ok" before dying.
+          pick() {
+            for f in "$@"; do
+              [ -f "$f" ] || continue          # unmatched glob stays literal
+              printf '%s' "$f"; return
+            done
+          }
+
+          ext=$(pick zig-out/lib/*.duckdb_extension)
+          if [ -n "$ext" ] && command -v duckdb >/dev/null 2>&1; then
+            duckdb -unsigned -c "LOAD '$ext'; SELECT 'duckdb ok';"
           else
             echo "skipped: no duckdb extension or no duckdb CLI"
           fi
 
-          sq=$(ls zig-out/lib/*.so zig-out/lib/*.dylib 2>/dev/null \
-               | grep -v '^.*/lib[^/]*$' | head -1)
-          if [ -n "$sq" ] && command -v sqlite3 >/dev/null; then
-            # macOS system sqlite3 has extension loading disabled; the Homebrew
-            # one does not. Prefer it when present.
-            SQ=$(ls /opt/homebrew/opt/sqlite/bin/sqlite3 2>/dev/null || command -v sqlite3)
+          # The SQLite extension, not the core cdylib: both live in lib/ and
+          # only the leading "lib" tells them apart.
+          sq=""
+          for f in zig-out/lib/*.so zig-out/lib/*.dylib; do
+            [ -f "$f" ] || continue
+            case "${f##*/}" in lib*) continue ;; esac
+            sq="$f"; break
+          done
+
+          if [ -n "$sq" ] && command -v sqlite3 >/dev/null 2>&1; then
+            # macOS's system sqlite3 has extension loading disabled; Homebrew's
+            # does not. Prefer it when present.
+            SQ=/opt/homebrew/opt/sqlite/bin/sqlite3
+            [ -x "$SQ" ] || SQ=$(command -v sqlite3)
             "$SQ" :memory: ".load ${sq%.*}" "SELECT 'sqlite ok';"
           else
             echo "skipped: no sqlite extension or no sqlite3 CLI"
           fi
-
-  wheel:
-    name: wheel ${{ matrix.label }}
-    runs-on: ${{ matrix.runner }}
-    needs: build
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: linux-x86_64
-            label: linux-x86_64 (dc1)
-            # dc1 is Ubuntu 24.04, glibc 2.39. Tagging manylinux_2_17 would be
-            # a lie the installer only discovers at import; PEP 600 tags are
-            # honest about the floor actually required.
-            platform: manylinux_2_39_x86_64
-          - runner: macos-arm64
-            label: macos-arm64 (gfe)
-            # Empty: hatch_build.py infers the tag from the host, which is
-            # correct for a native build and avoids hardcoding an OS version.
-            platform: ""
-
-    steps:
-      - uses: https://code.forgejo.org/actions/checkout@v4
-
-      - name: Skip if this repo has no ctypes wheel yet
-        id: check
-        run: |
-          # The wheel is py3-none-<platform>: platform-specific because it
-          # carries a native library, ABI-agnostic because ctypes binds at
-          # runtime rather than against the CPython C API. That is only true
-          # once a repo is off nanobind, so check rather than assume.
-          if [ -f hatch_build.py ] && grep -q 'hatchling.build' pyproject.toml 2>/dev/null; then
-            echo "ready=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "still on the nanobind/scikit-build path — no wheel built"
-          fi
-
-      - name: Build the release artifacts
-        if: steps.check.outputs.ready == 'true'
-        run: zig build -Doptimize=ReleaseFast
-
-      - name: Build wheel
-        if: steps.check.outputs.ready == 'true'
-        env:
-          BLOB_WHEEL_PLATFORM: ${{ matrix.platform }}
-        run: |
-          curl -LsSf https://astral.sh/uv/install.sh | sh || true
-          export PATH="$HOME/.local/bin:$PATH"
-          uv build --wheel
-
-      - name: Show what was produced
-        if: steps.check.outputs.ready == 'true'
-        run: |
-          ls -la dist/
-          # One wheel per platform, not one per interpreter. If a py3.11/3.12/...
-          # matrix ever reappears here, something has regressed to nanobind.
-          for w in dist/*.whl; do
-            case "$w" in
-              *py3-none-*) echo "ok: $(basename "$w")" ;;
-              *) echo "unexpected ABI-specific wheel: $(basename "$w")" >&2; exit 1 ;;
-            esac
-          done
