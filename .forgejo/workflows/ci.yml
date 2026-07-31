@@ -67,7 +67,19 @@ jobs:
           echo "runner: ${{ matrix.label }}"
 
       - name: Build
-        run: zig build --summary all
+        # -j2 and --maxrss are not tuning, they are what keeps dc1 alive.
+        #
+        # The runner takes 4 concurrent jobs, and `zig build` defaults to every
+        # core and all available memory. On a 6-core / 7.6 GB box that is up to
+        # 24 compilers competing for 7.6 GB. On 2026-07-31 that exhausted
+        # memory, and because forgejo runs with oom_score_adj=200 the OOM killer
+        # took the git server rather than the builds — the host was unreachable
+        # for ~25 minutes while the runner carried on.
+        #
+        # 2 jobs x 2 GB leaves headroom for forgejo, Docker and the page cache.
+        # The macOS runner is a 10-core M4 with 16 GB and does not need this,
+        # but a uniform workflow is worth more than the few seconds it costs.
+        run: zig build --summary all -j2 --maxrss 2147483648
 
       - name: Test
         run: |
