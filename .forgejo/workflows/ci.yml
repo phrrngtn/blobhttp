@@ -55,8 +55,18 @@ jobs:
         include:
           - runner: linux-x86_64
             label: linux-x86_64 (dc1)
+          # Native macOS, on the host. Kept because it is the only place the
+          # Darwin-specific paths are exercised at all: Mach-O install names,
+          # the -dynamiclib/-exported_symbols_list shim build, DYLD_LIBRARY_PATH.
+          # A Linux container on this laptop tests none of that.
           - runner: macos-arm64
             label: macos-arm64 (gfe)
+          # arm64 Linux, containerised on the laptop. Genuinely a third data
+          # point rather than a slower copy of dc1 — it separates "Linux" from
+          # "x86_64", which matters here: blobfilters aborts on linux-x86_64 and
+          # blobhttp is flaky on it, and neither reproduces on macOS arm64.
+          - runner: linux-arm64
+            label: linux-arm64 (gfe, docker)
 
     steps:
       - uses: https://code.forgejo.org/actions/checkout@v4
