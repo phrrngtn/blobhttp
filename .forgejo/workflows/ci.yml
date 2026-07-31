@@ -89,10 +89,16 @@ jobs:
         run: |
           # `zig build` exiting 0 is not proof it produced anything: a mis-wired
           # install step can succeed and emit nothing.
-          ls -la zig-out/lib/ 2>/dev/null || true
-          n=$(ls zig-out/lib 2>/dev/null | wc -l | tr -d ' ')
-          if [ "$n" = "0" ] && [ "${{ github.event.repository.name }}" != "blobzig" ]; then
-            echo "no artifacts in zig-out/lib" >&2
+          #
+          # Accept either directory rather than special-casing repos by name.
+          # Extension repos install libraries into zig-out/lib; blobzig is the
+          # shared build layer and installs tools into zig-out/bin. An earlier
+          # version tested `repository.name != blobzig`, which does not evaluate
+          # under Forgejo and failed the very repo it meant to exempt.
+          ls -la zig-out/lib zig-out/bin 2>/dev/null || true
+          n=$(ls zig-out/lib zig-out/bin 2>/dev/null | grep -cvE '^$|:$' || true)
+          if [ "${n:-0}" -eq 0 ]; then
+            echo "zig build produced no artifacts in zig-out/{lib,bin}" >&2
             exit 1
           fi
           echo "$n artifact(s)"
