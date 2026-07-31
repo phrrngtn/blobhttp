@@ -493,6 +493,13 @@ fn configDir(target: std.Target) []const u8 {
         },
         .linux => switch (target.cpu.arch) {
             .x86_64 => "linux_x86_64",
+            // Generated on aarch64 and, as it happens, byte-identical to the
+            // x86_64 one — curl's probes come out the same on both glibc
+            // Linuxes. Kept as its own directory anyway: the contract is "one
+            // config per target, generated on that target", and collapsing
+            // them would quietly assert an equivalence that a future arch or a
+            // musl build need not honour.
+            .aarch64 => "linux_arm64",
             else => @panic("no committed curl config for this Linux arch — see tools/gen_curl_config.sh"),
         },
         else => @panic("no committed curl config for this OS — see tools/gen_curl_config.sh"),

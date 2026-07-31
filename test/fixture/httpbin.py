@@ -14,6 +14,14 @@ and broken against modern Werkzeug. This runs anywhere python3 does, offline.
 
 Prints "READY <port>" once accepting connections, so callers wait rather than
 sleep a guessed interval.
+
+Endpoints:
+    /bytes/N        N deterministic bytes (i % 256)
+    /status/N       empty response with status N
+
+Rate limiting is deliberately NOT here: it is already covered through SQL in
+test/test_ratelimit.py against test/flask_ratelimit_server.py, which is the
+layer that behaviour is actually used at.
 """
 
 import sys
@@ -27,8 +35,10 @@ class Handler(BaseHTTPRequestHandler):
         pass  # the test prints its own results; request logs bury them
 
     def do_GET(self):
-        parts = [p for p in self.path.split("?")[0].split("/") if p]
-        body, status = b"", 404
+        path = self.path.split("?")[0]
+        parts = [p for p in path.split("/") if p]
+        body, status, extra = b"", 404, {}
+
         if len(parts) == 2 and parts[0] == "bytes":
             # Deterministic, not random: a byte-for-byte assertion should not
             # depend on entropy, and this catches a body mangled mid-stream.
@@ -40,6 +50,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/octet-stream")
         self.send_header("Content-Length", str(len(body)))
+        for k, v in extra.items():
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
 

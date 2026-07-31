@@ -190,7 +190,13 @@ static void test_binary_body(void) {
         return;
     }
 
-    bh_batch *b = bh_batch_new("{}");
+    /* "none" so this does not register a limiter for 127.0.0.1. The registry
+     * is process-wide, keyed by host with the port stripped, and GetOrCreate
+     * only runs its factory once — so whichever test touches the fixture first
+     * fixes that host's rate for the whole process. With a default config here
+     * the pacing tests below would silently run at 20/s no matter what they
+     * ask for. */
+    bh_batch *b = bh_batch_new("{\"default\": {\"rate_limit\": \"none\"}}");
     if (!b) { check(0, "bh_batch_new (binary)"); return; }
 
     char url[128];
@@ -238,6 +244,7 @@ static void test_errors(void) {
 static void test_stats(void) {
     char *stats = bh_rate_limit_stats_json();
     check(stats != NULL && stats[0] == '[', "rate limit stats is a JSON array");
+
     bh_free(stats);
 }
 
