@@ -198,6 +198,20 @@ static void negotiate_auth_header_func(sqlite3_context *ctx, int argc, sqlite3_v
 	sqlite3_result_text(ctx, result.get(), -1, SQLITE_TRANSIENT);
 }
 
+//! bh_negotiate_available() -> INTEGER (0/1)
+//!
+//! Is GSS-API present and usable in this process? SQLite has no boolean type,
+//! so this is 0/1, which is what its own predicates return.
+//!
+//! The C ABI always exported this; it simply was never surfaced. Without it the
+//! only way to ask was to call bh_negotiate_auth_header and read the failure,
+//! which conflates "no Kerberos here" with "this URL was refused".
+static void negotiate_available_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+	(void)argc;
+	(void)argv;
+	sqlite3_result_int(ctx, bh_negotiate_available() != 0 ? 1 : 0);
+}
+
 static void negotiate_auth_header_json_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
 	auto url = ArgText(argc, argv, 0);
 	std::unique_ptr<char, void (*)(void *)> result(
@@ -432,6 +446,10 @@ int sqlite3_bhttp_init(sqlite3 *db, char **pzErrMsg,
 
 	rc = sqlite3_create_function(db, "bh_negotiate_auth_header_json", 1, SQLITE_UTF8, nullptr,
 	                              negotiate_auth_header_json_func, nullptr, nullptr);
+	if (rc != SQLITE_OK) return rc;
+
+	rc = sqlite3_create_function(db, "bh_negotiate_available", 0, SQLITE_UTF8, nullptr,
+	                              negotiate_available_func, nullptr, nullptr);
 	if (rc != SQLITE_OK) return rc;
 
 	rc = sqlite3_create_function(db, "bh_http_rate_limit_stats", 0, SQLITE_UTF8, nullptr,

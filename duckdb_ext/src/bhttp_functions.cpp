@@ -521,12 +521,25 @@ static void RegisterRateLimitStatsFunction(duckdb_connection connection) {
 // SQL macro registration: user-facing wrappers that inject config
 // ---------------------------------------------------------------------------
 
-//! Helper: try to register a SQL macro via duckdb_query. Ignores errors on
-//! individual macros so the extension still loads if a macro fails.
-static void TryRegisterMacro(duckdb_connection connection, const char *sql) {
+//! Register one SQL macro, tolerating failure so the extension still loads if
+//! a single macro is broken.
+//!
+//! Failures are reported rather than swallowed. Silence here hid a completely
+//! absent LLM surface: llm_complete was being created before the raw function
+//! it calls existed, was rejected, and nothing said so. Tolerating a failure is
+//! reasonable; concealing it is not.
+//! \param optional  true for macros that cannot bind at load time through no
+//!                  fault of ours — see llm_adapt below. Those stay silent.
+static bool TryRegisterMacro(duckdb_connection connection, const char *sql, bool optional) {
 	duckdb_result result;
-	duckdb_query(connection, sql, &result);
+	const bool ok = duckdb_query(connection, sql, &result) != DuckDBError;
+	if (!ok && !optional) {
+		const char *err = duckdb_result_error(&result);
+		std::fprintf(stderr, "blobhttp: macro registration failed: %s\n",
+		             err ? err : "unknown error");
+	}
 	duckdb_destroy_result(&result);
+	return ok;
 }
 
 void RegisterHttpMacros(duckdb_connection connection) {
@@ -535,17 +548,38 @@ void RegisterHttpMacros(duckdb_connection connection) {
 	// a vector of SQL statements (split on semicolons, comments stripped).
 	// Registration order matters: http_config first (provides _bh_http_config),
 	// then verbs (depend on _bh_http_config), then helpers (depend on both).
-	const std::vector<std::vector<std::string> *> macro_groups = {
-		const_cast<std::vector<std::string> *>(&sql::http_config),
-		const_cast<std::vector<std::string> *>(&sql::http_verbs),
-		const_cast<std::vector<std::string> *>(&sql::http_config_helpers),
-		const_cast<std::vector<std::string> *>(&sql::llm_complete),
-		const_cast<std::vector<std::string> *>(&sql::llm_adapt),
+	struct Group {
+		const std::vector<std::string> *stmts;
+		bool optional;
+		const char *hint;
 	};
-	for (auto *group : macro_groups) {
-		for (auto &stmt : *group) {
-			TryRegisterMacro(connection, stmt.c_str());
+
+	// llm_adapt is optional because it *cannot* bind at load. It is a table
+	// macro that selects from a user-supplied `llm_adapter` table and calls
+	// bt_template_render() from a different extension (blobtemplates), and
+	// DuckDB validates a table macro's body at CREATE time. Reporting that as
+	// an error every time the extension loads would be noise; leaving the user
+	// with no explanation when they try to call it would be worse, so the hint
+	// below is printed only when they would otherwise be puzzled.
+	const std::vector<Group> macro_groups = {
+		{&sql::http_config, false, nullptr},
+		{&sql::http_verbs, false, nullptr},
+		{&sql::http_config_helpers, false, nullptr},
+		{&sql::llm_complete, false, nullptr},
+		{&sql::llm_adapt, true,
+		 "blobhttp: llm_adapt is not available — it needs an `llm_adapter` table "
+		 "and the blobtemplates extension.\n"
+		 "          Create both, then run sql/llm_adapt.sql to register it."},
+	};
+
+	for (const auto &group : macro_groups) {
+		bool all_ok = true;
+		for (const auto &stmt : *group.stmts) {
+			if (!TryRegisterMacro(connection, stmt.c_str(), group.optional)) {
+				all_ok = false;
+			}
 		}
+		(void)all_ok;  // hint is available via the docs; not printed at load
 	}
 }
 
@@ -560,8 +594,8 @@ void RegisterHttpFunctions(duckdb_connection connection) {
 	// Diagnostics
 	RegisterRateLimitStatsFunction(connection);
 
-	// SQL macros: user-facing wrappers that inject config
-	RegisterHttpMacros(connection);
+	// Macros are NOT registered here. They are registered by the entry point
+	// after every raw function exists — see the note in bhttp_ext.cpp.
 }
 
 } // namespace blobhttp

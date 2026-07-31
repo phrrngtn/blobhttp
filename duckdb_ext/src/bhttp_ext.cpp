@@ -123,6 +123,42 @@ static void SsoJwtJsonFunc(duckdb_function_info i, duckdb_data_chunk in, duckdb_
 	SsoJwtFunc(i, in, out, true);
 }
 
+// ---------------------------------------------------------------------------
+// bh_negotiate_available() -> BOOLEAN
+// Is GSS-API present and usable in this process?
+//
+// The C ABI has always exported this; it simply was never surfaced. Without it
+// the only way to ask from SQL was to call bh_negotiate_auth_header and read
+// the failure, which conflates "no Kerberos on this machine" with "this
+// particular URL was refused".
+// ---------------------------------------------------------------------------
+
+static void NegotiateAvailableFunc(duckdb_function_info info, duckdb_data_chunk input, duckdb_vector output) {
+	(void)info;
+	const idx_t input_size = duckdb_data_chunk_get_size(input);
+	auto *out = (bool *)duckdb_vector_get_data(output);
+	// Constant for the life of the process, so hoist it out of the row loop.
+	const bool available = bh_negotiate_available() != 0;
+	for (idx_t row = 0; row < input_size; row++) {
+		out[row] = available;
+	}
+}
+
+static void RegisterNoArgBoolFunction(duckdb_connection connection, const char *name,
+                                      duckdb_scalar_function_t func) {
+	duckdb_scalar_function function = duckdb_create_scalar_function();
+	duckdb_scalar_function_set_name(function, name);
+
+	duckdb_logical_type bool_type = duckdb_create_logical_type(DUCKDB_TYPE_BOOLEAN);
+	duckdb_scalar_function_set_return_type(function, bool_type);
+	duckdb_destroy_logical_type(&bool_type);
+
+	duckdb_scalar_function_set_function(function, func);
+
+	duckdb_register_scalar_function(connection, function);
+	duckdb_destroy_scalar_function(&function);
+}
+
 static void RegisterScalarVarcharFunction(duckdb_connection connection, const char *name,
                                           duckdb_scalar_function_t func) {
 	duckdb_scalar_function function = duckdb_create_scalar_function();
@@ -149,8 +185,20 @@ DUCKDB_EXTENSION_ENTRYPOINT(duckdb_connection connection, duckdb_extension_info 
 	RegisterScalarVarcharFunction(connection, "bh_negotiate_auth_header_json", NegotiateAuthTokenJsonFunc);
 	RegisterScalarVarcharFunction(connection, "bh_sso_jwt", SsoJwtTokenFunc);
 	RegisterScalarVarcharFunction(connection, "bh_sso_jwt_json", SsoJwtJsonFunc);
+	RegisterNoArgBoolFunction(connection, "bh_negotiate_available", NegotiateAvailableFunc);
+
+	// Order is load-bearing: every raw _-prefixed scalar must be registered
+	// before RegisterHttpMacros runs, because DuckDB validates a macro body at
+	// CREATE time and a macro naming an unknown function is rejected.
+	//
+	// This was wrong until 2026-07-31. RegisterHttpFunctions used to register
+	// the macros itself, so llm_complete and llm_adapt were created before
+	// _llm_complete_raw and _llm_adapt_raw existed. They failed, TryRegisterMacro
+	// swallowed the error, and the whole LLM surface was silently missing from
+	// DuckDB while the raw functions sat there registered and unreachable.
 	blobhttp::RegisterHttpFunctions(connection);
 	blobhttp::RegisterLlmFunctions(connection);
 	blobhttp::RegisterLlmAdaptFunction(connection);
+	blobhttp::RegisterHttpMacros(connection);
 	return true;
 }
