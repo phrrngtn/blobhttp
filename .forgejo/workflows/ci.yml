@@ -135,7 +135,17 @@ jobs:
 
           ext=$(pick zig-out/lib/*.duckdb_extension)
           if [ -n "$ext" ] && command -v duckdb >/dev/null 2>&1; then
-            duckdb -unsigned -c "LOAD '$ext'; SELECT 'duckdb ok';"
+            # glibc.rtld.optional_static_tls is for blobd2 and anything else
+            # carrying a Go c-archive. Go's runtime wants static TLS, and a
+            # library dlopen'd after process start has only glibc's small
+            # surplus to draw on — hence "cannot allocate memory in static TLS
+            # block". Raising the surplus is the standard remedy.
+            #
+            # NOTE: this is a real deployment requirement on Linux, not a CI
+            # workaround. Anyone loading blobd2's DuckDB extension on glibc
+            # needs the same tunable. See blobd2's README.
+            GLIBC_TUNABLES=glibc.rtld.optional_static_tls=524288 \
+              duckdb -unsigned -c "LOAD '$ext'; SELECT 'duckdb ok';"
           else
             echo "skipped: no duckdb extension or no duckdb CLI"
           fi
