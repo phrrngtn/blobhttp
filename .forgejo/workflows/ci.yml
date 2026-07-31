@@ -164,7 +164,11 @@ jobs:
             # does not. Prefer it when present.
             SQ=/opt/homebrew/opt/sqlite/bin/sqlite3
             [ -x "$SQ" ] || SQ=$(command -v sqlite3)
-            "$SQ" :memory: ".load ${sq%.*}" "SELECT 'sqlite ok';"
+            # Same static-TLS surplus as the DuckDB load above — the first
+            # version set it only there, and blobd2 then passed the DuckDB
+            # check and failed the SQLite one with the identical error.
+            GLIBC_TUNABLES=glibc.rtld.optional_static_tls=524288 \
+              "$SQ" :memory: ".load ${sq%.*}" "SELECT 'sqlite ok';"
           else
             echo "skipped: no sqlite extension or no sqlite3 CLI"
           fi
