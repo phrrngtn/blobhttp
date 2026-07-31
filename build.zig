@@ -710,6 +710,16 @@ pub fn build(b: *std.Build) void {
         t.root_module.linkFramework("CoreFoundation", .{});
     }
     b.installArtifact(t);
+
+    // The test spawns test/fixture/httpbin.py as a local stand-in for
+    // httpbin.org, whose rate-limiting made the suite flake. Only the build
+    // knows where the source tree is, so hand the path over rather than making
+    // the test guess relative to a cwd it does not control.
+    const run_core = b.addRunArtifact(t);
+    run_core.setEnvironmentVariable(
+        "BLOBHTTP_FIXTURE",
+        b.pathFromRoot("test/fixture/httpbin.py"),
+    );
     b.step("test-core", "Exercise the C ABI directly (needs the network)")
-        .dependOn(&b.addRunArtifact(t).step);
+        .dependOn(&run_core.step);
 }
