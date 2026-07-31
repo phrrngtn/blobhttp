@@ -5,8 +5,8 @@
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .blobzig = .{
-            .url = "git+https://github.com/phrrngtn/blobzig?ref=main#abaad7d70d986ecb9cbf5c189cc32b5e5533b2df",
-            .hash = "blobzig-0.1.0-DiYQfRo4CwBYWNGZ3ulmIJ1qM7GC7JtjD3pYZWYBiDG2",
+            .url = "git+https://github.com/phrrngtn/blobzig?ref=main#3d02bde3d19868a1f8a295c5bd673a419c93abd8",
+            .hash = "blobzig-0.1.0-DiYQfU1UCwB_JFdJrORuginzMoWKrR-lhYqKf1AxkeCD",
         },
         .jsoncons = .{
             .url = "git+https://github.com/danielaparker/jsoncons?ref=v1.1.0#eee098be8f774f64527281d5beb9e90aa9b73e06",
