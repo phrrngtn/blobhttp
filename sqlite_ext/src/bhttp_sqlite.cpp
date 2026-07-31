@@ -148,6 +148,128 @@ static void bhttp_post_func(sqlite3_context *ctx, int argc, sqlite3_value **argv
 }
 
 /* ══════════════════════════════════════════════════════════════════════
+ * llm_complete(url, body, [headers, output_schema, max_continuations,
+ *              max_retries, config]) -> TEXT
+ *
+ * Schema-validated LLM completion with automatic continuation. DuckDB has had
+ * this as a macro over _llm_complete_raw since the feature landed; SQLite had
+ * no path to it at all, even though bh_llm_complete sits in the shared core
+ * doing all of the work.
+ *
+ * Named without the bh_ prefix to match DuckDB's macro, so the same call reads
+ * the same in both hosts.
+ *
+ * The one deliberate difference from DuckDB: config is the last argument
+ * instead of coming from a session variable. SQLite has no session variables,
+ * which is the same reason every other verb here takes config explicitly.
+ * ══════════════════════════════════════════════════════════════════════ */
+
+static void bhttp_llm_complete_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+	if (argc < 2) {
+		sqlite3_result_error(ctx, "llm_complete requires at least 2 arguments: url, body", -1);
+		return;
+	}
+	auto url = ArgText(argc, argv, 0);
+	auto body = ArgText(argc, argv, 1);
+	if (url.empty()) { sqlite3_result_null(ctx); return; }
+
+	//! Optional integer argument, or `def` when absent/NULL.
+	auto arg_int = [&](int i, int def) -> int {
+		if (argc <= i || sqlite3_value_type(argv[i]) == SQLITE_NULL) return def;
+		return sqlite3_value_int(argv[i]);
+	};
+	//! An absent JSON argument must become {} rather than "", because the core
+	//! parses these fields rather than treating them as opaque strings.
+	auto arg_json = [&](int i) -> nlohmann::json {
+		auto t = ArgText(argc, argv, i);
+		if (t.empty()) return nlohmann::json::object();
+		return nlohmann::json::parse(t);
+	};
+
+	try {
+		// Same request shape as DuckDB's _llm_complete_raw builds — the core
+		// contract is the JSON, so both hosts must agree on it exactly.
+		nlohmann::json request;
+		request["url"] = url;
+		request["body"] = body.empty() ? nlohmann::json::object()
+		                               : nlohmann::json::parse(body);
+		request["headers"] = arg_json(2);
+		request["output_schema"] = ArgText(argc, argv, 3);
+		request["max_continuations"] = arg_int(4, 10);
+		request["max_retries"] = arg_int(5, 3);
+		request["http_config"] = arg_json(6);
+
+		auto request_str = request.dump();
+		std::unique_ptr<char, void (*)(void *)> result(
+		    bh_llm_complete(request_str.c_str()), bh_free);
+		if (!result) {
+			sqlite3_result_error(ctx, bh_errmsg(), -1);
+			return;
+		}
+		// bh_llm_complete returns {content, stats}; DuckDB hands back content
+		// alone, so this does too.
+		auto parsed = nlohmann::json::parse(result.get());
+		auto content = parsed.value("content", std::string());
+		sqlite3_result_text(ctx, content.c_str(), content.length(), SQLITE_TRANSIENT);
+	} catch (const std::exception &e) {
+		sqlite3_result_error(ctx, e.what(), -1);
+	}
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+ * The remaining verbs: HEAD, OPTIONS, DELETE, PUT, PATCH.
+ *
+ * DuckDB gets these as SQL macros over one raw function. SQLite has no macro
+ * system, so each needs a registration — but not its own C function: the method
+ * travels as sqlite3_create_function's user-data pointer, so two dispatchers
+ * cover all five. Argument order matches the DuckDB macros exactly, which is
+ * the point of adding them: the same call should work in either host.
+ * ══════════════════════════════════════════════════════════════════════ */
+
+//! HEAD / OPTIONS / DELETE — no request body.
+//! bh_http_<verb>(url, [headers, params, config])
+static void bhttp_verb_bodyless_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+	const char *method = static_cast<const char *>(sqlite3_user_data(ctx));
+	if (argc < 1) {
+		sqlite3_result_error(ctx, "this function requires at least 1 argument: url", -1);
+		return;
+	}
+	auto url = ArgText(argc, argv, 0);
+	if (url.empty()) { sqlite3_result_null(ctx); return; }
+
+	try {
+		auto result = ExecuteRequest(method, url, ArgText(argc, argv, 1),
+		                             ArgText(argc, argv, 2), "", "",
+		                             ArgText(argc, argv, 3));
+		sqlite3_result_text(ctx, result.c_str(), result.length(), SQLITE_TRANSIENT);
+	} catch (const std::exception &e) {
+		sqlite3_result_error(ctx, e.what(), -1);
+	}
+}
+
+//! PUT / PATCH — with a request body, in the same argument order as
+//! bh_http_post: (url, [body, content_type, headers, config]).
+static void bhttp_verb_body_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+	const char *method = static_cast<const char *>(sqlite3_user_data(ctx));
+	if (argc < 1) {
+		sqlite3_result_error(ctx, "this function requires at least 1 argument: url", -1);
+		return;
+	}
+	auto url = ArgText(argc, argv, 0);
+	if (url.empty()) { sqlite3_result_null(ctx); return; }
+
+	try {
+		auto result = ExecuteRequest(method, url, ArgText(argc, argv, 3), "",
+		                             ArgText(argc, argv, 1),   // body
+		                             ArgText(argc, argv, 2),   // content type
+		                             ArgText(argc, argv, 4));
+		sqlite3_result_text(ctx, result.c_str(), result.length(), SQLITE_TRANSIENT);
+	} catch (const std::exception &e) {
+		sqlite3_result_error(ctx, e.what(), -1);
+	}
+}
+
+/* ══════════════════════════════════════════════════════════════════════
  * bh_http_body(method, url, [headers, params, body, content_type, config])
  *     -> BLOB
  *
@@ -446,6 +568,29 @@ int sqlite3_bhttp_init(sqlite3 *db, char **pzErrMsg,
 
 	rc = sqlite3_create_function(db, "bh_negotiate_auth_header_json", 1, SQLITE_UTF8, nullptr,
 	                              negotiate_auth_header_json_func, nullptr, nullptr);
+	if (rc != SQLITE_OK) return rc;
+
+	// The method strings below are string literals: static storage duration, so
+	// passing their addresses as user-data outlives the connection.
+	struct VerbReg { const char *name; const char *method; bool has_body; };
+	static const VerbReg kVerbs[] = {
+		{"bh_http_head",    "HEAD",    false},
+		{"bh_http_options", "OPTIONS", false},
+		{"bh_http_delete",  "DELETE",  false},
+		{"bh_http_put",     "PUT",     true},
+		{"bh_http_patch",   "PATCH",   true},
+	};
+	for (const auto &v : kVerbs) {
+		rc = sqlite3_create_function(
+		    db, v.name, -1, SQLITE_UTF8,
+		    const_cast<char *>(v.method),
+		    v.has_body ? bhttp_verb_body_func : bhttp_verb_bodyless_func,
+		    nullptr, nullptr);
+		if (rc != SQLITE_OK) return rc;
+	}
+
+	rc = sqlite3_create_function(db, "llm_complete", -1, SQLITE_UTF8, nullptr,
+	                              bhttp_llm_complete_func, nullptr, nullptr);
 	if (rc != SQLITE_OK) return rc;
 
 	rc = sqlite3_create_function(db, "bh_negotiate_available", 0, SQLITE_UTF8, nullptr,
