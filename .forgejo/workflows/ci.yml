@@ -26,6 +26,23 @@ on:
   pull_request:
   workflow_dispatch:
 
+# The dc1 runner injects http_proxy/https_proxy pointing at a local Squid, for
+# SSL-bumped caching of the CMake-era downloads. Zig's HTTP client uses a proxy
+# when those are set but does NOT honour no_proxy, and it does not survive the
+# SSL-bumped tunnel — every fetch died with HttpConnectionClosing.
+#
+# Cleared here rather than in the runner config, so the change is scoped to
+# these jobs and other work on that runner keeps its proxy. The container has
+# direct outbound access anyway, and Zig's own content-addressed global cache
+# is the caching layer that actually matters for these builds.
+env:
+  http_proxy: ""
+  https_proxy: ""
+  HTTP_PROXY: ""
+  HTTPS_PROXY: ""
+  all_proxy: ""
+  ALL_PROXY: ""
+
 jobs:
   build:
     name: ${{ matrix.label }}
