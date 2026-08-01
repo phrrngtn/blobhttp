@@ -4,15 +4,16 @@
 # every repo as `.forgejo/workflows/ci.yml`, so a change here reaches all of
 # them rather than twelve copies drifting apart.
 #
-# Two runners, matching the two platforms actually used:
+# Three runners, matching the three platforms actually used:
 #
 #   linux-x86_64  dc1, Docker, the `blob-builder` image (has zig, go, g++,
 #                 duckdb, sqlite3)
+#   linux-arm64   gfe, Docker, `blob-builder-arm64`. Not a slower copy of dc1:
+#                 it separates *Linux* from *x86_64*, the axis this family's
+#                 real bugs sit on. The roaring alignment SIGABRT (blobfilters
+#                 6d43f99) failed on both Linux arches and passed on macOS —
+#                 that is the coverage this leg buys.
 #   macos-arm64   gfe, running on the host, so this is native Apple Silicon
-#
-# There is a third runner registered — `linux-arm64` on gfe via Docker — which
-# is deliberately not used here: it duplicates dc1's coverage on slower
-# hardware, and it has been failing to reach the server for days.
 #
 # Nothing here is repo-specific. The test step is discovered from
 # `zig build --list-steps`, because repos legitimately differ: `test-c`,
@@ -25,6 +26,19 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+
+# Shaping, so a push storm across twelve repos cannot pile up on three runners.
+#
+# Scope is one group per repo+ref. Pushing twice in quick succession cancels the
+# superseded run instead of queueing both behind `capacity: 1`. Forgejo has no
+# cross-repo concurrency, so runner `capacity` remains the estate-wide throttle;
+# this only stops a single repo from queueing against itself.
+#
+# cancel-in-progress is safe here because these jobs are pure build+test with no
+# deploy or publish step — nothing is left half-applied by a cancellation.
+concurrency:
+  group: ${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: true
 
 # The dc1 runner injects http_proxy/https_proxy pointing at a local Squid, for
 # SSL-bumped caching of the CMake-era downloads. Zig's HTTP client uses a proxy
