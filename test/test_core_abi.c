@@ -10,6 +10,12 @@
  * below for why.
  */
 
+/* Before any include: the fixture uses fork/pipe/kill, and this file is built
+ * with -std=c11, which is strict ISO. glibc then hides the POSIX declarations
+ * and `kill` fails to compile — macOS exposes them unconditionally, so this
+ * builds there and breaks only on Linux. */
+#define _POSIX_C_SOURCE 200809L
+
 #include "blobhttp.h"
 
 #include <stdio.h>
