@@ -727,6 +727,41 @@ pub fn build(b: *std.Build) void {
         "BLOBHTTP_FIXTURE",
         b.pathFromRoot("test/fixture/httpbin.py"),
     );
-    b.step("test-core", "Exercise the C ABI directly (needs the network)")
+    // "needs the network" until b755934, which replaced httpbin.org with the
+    // local fixture wired up just above. Measured 2026-08-02: 20/20 on
+    // linux-x86_64 and 20/20 on macOS arm64, so it is no longer a flake source.
+    b.step("test-core", "Exercise the C ABI directly (self-contained local fixture)")
         .dependOn(&run_core.step);
+
+    // ── SQL-level suite: the surface consumers actually use ───────────────
+    //
+    // test-core exercises the C ABI, which says little about whether the
+    // extension works for anyone. This runs SQL against the loaded extension
+    // instead. The shared CI workflow discovers steps from
+    // `zig build --list-steps` and runs every one of `test`, `test-c`,
+    // `test-core` that exists, so naming this `test` wires it into all three
+    // runners with no workflow change and no drift risk to the other repos.
+    //
+    // Dependencies come via `uv run --with` rather than being assumed present:
+    // identical invocation on a dev Mac and in the builder images, which pin
+    // UV_CACHE_DIR and pre-warm it so this needs no network at test time.
+    //
+    // Both pins are load-bearing and must match the images' warm step exactly,
+    // or the cache misses and the test step silently needs the network again:
+    //   --python ">=3.14"   the images carry 3.11-3.14, and an unpinned uv run
+    //                       resolves to whichever is newest — which is not
+    //                       necessarily what the cache was warmed for.
+    //   --with "duckdb>=1.5"
+    const sql_suite = b.addSystemCommand(&.{
+        "uv",     "run",             "--no-project",
+        "--python", ">=3.14",
+        "--with", "duckdb>=1.5",
+        "--with", "flask",
+        "python",
+    });
+    sql_suite.addFileArg(b.path("test/run_sql_suite.py"));
+    sql_suite.addArg(b.pathFromRoot("zig-out/lib/bhttp.duckdb_extension"));
+    sql_suite.step.dependOn(b.getInstallStep());
+    b.step("test", "Run the SQL-level suite against the built DuckDB extension")
+        .dependOn(&sql_suite.step);
 }
